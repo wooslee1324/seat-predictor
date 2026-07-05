@@ -1,11 +1,14 @@
-"""오늘 퇴근길 좌석 예측기 — 서울시 공공데이터 기반 프로토타입 (Mock Data)."""
+"""오늘 퇴근길 좌석 예측기 — 서울시 공공데이터 기반 프로토타입."""
 
 from datetime import date, datetime, time, timedelta
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+import seoul_api
 
 st.set_page_config(
     page_title="오늘 퇴근길 좌석 예측기",
@@ -111,28 +114,45 @@ def congestion_level(pct: float):
 
 
 @st.cache_data(show_spinner=False)
-def generate_prediction(transport: str, dep_station: str, arr_station: str, dep_hour: int, dep_minute: int):
+def generate_prediction(
+    transport: str,
+    dep_station: str,
+    arr_station: str,
+    dep_hour: int,
+    dep_minute: int,
+    real_congestion_pct: Optional[tuple] = None,
+    real_line: Optional[str] = None,
+):
+    """real_congestion_pct가 주어지면 그 값을 혼잡도로 쓰고, 없으면 mock 곡선을 생성한다.
+
+    좌석 확률(seat_prob_pct)은 두 경우 모두 "혼잡도가 낮을수록 좌석 확률이 높다"는
+    동일한 유도 공식을 쓴다 — 실측값이 아니라 혼잡도로부터 추정한 값이라는 점은
+    UI 캡션에 항상 표시한다.
+    """
     seed_key = (transport, dep_station.strip().lower(), arr_station.strip().lower(), dep_hour, dep_minute)
     seed = abs(hash(seed_key)) % (2**32)
     rng = np.random.default_rng(seed)
 
     dep_t = time(dep_hour, dep_minute)
-    hour_decimal = dep_hour + dep_minute / 60
-    rush_center, rush_width = 18.5, 1.3
-    rush_intensity = np.exp(-0.5 * ((hour_decimal - rush_center) / rush_width) ** 2)
-
-    base_congestion_now = float(np.clip(35 + rush_intensity * 55 + rng.normal(0, 4), 15, 97))
-
     minutes_offset = np.arange(0, 65, 5)
     base_dt = datetime.combine(date.today(), dep_t)
     times = [(base_dt + timedelta(minutes=int(m))).time() for m in minutes_offset]
     time_labels = [t.strftime("%H:%M") for t in times]
 
-    decay = np.linspace(0, 1, len(minutes_offset))
-    congestion_curve = base_congestion_now * (1 - 0.5 * decay) + rng.normal(0, 3, len(minutes_offset))
-    congestion_curve = np.clip(congestion_curve, 8, 99)
+    is_real = real_congestion_pct is not None
+    if is_real:
+        congestion_curve = np.array(real_congestion_pct, dtype=float)
+        base_congestion_now = float(congestion_curve[0])
+    else:
+        hour_decimal = dep_hour + dep_minute / 60
+        rush_center, rush_width = 18.5, 1.3
+        rush_intensity = np.exp(-0.5 * ((hour_decimal - rush_center) / rush_width) ** 2)
+        base_congestion_now = float(np.clip(35 + rush_intensity * 55 + rng.normal(0, 4), 15, 97))
+        decay = np.linspace(0, 1, len(minutes_offset))
+        congestion_curve = base_congestion_now * (1 - 0.5 * decay) + rng.normal(0, 3, len(minutes_offset))
+        congestion_curve = np.clip(congestion_curve, 8, 99)
 
-    seat_base = float(np.clip(100 - base_congestion_now - rng.uniform(0, 5), 2, 60))
+    seat_base = float(np.clip(100 - min(base_congestion_now, 100) - rng.uniform(0, 5), 2, 60))
     seat_target = float(np.clip(seat_base + rng.uniform(30, 45), seat_base + 10, 96))
     k = 0.18
     t0 = rng.uniform(12, 20)
@@ -154,7 +174,7 @@ def generate_prediction(transport: str, dep_station: str, arr_station: str, dep_
     else:
         wait_spot = rng.choice(BUS_POSITION_OPTIONS)
 
-    return df, wait_spot
+    return df, wait_spot, is_real, real_line
 
 
 with st.form("route_form"):
@@ -179,7 +199,29 @@ if "last_inputs" not in st.session_state or submitted:
 
 transport, dep_station, arr_station, dep_time = st.session_state.last_inputs
 
-df, wait_spot = generate_prediction(transport, dep_station, arr_station, dep_time.hour, dep_time.minute)
+MINUTES_OFFSET = list(range(0, 65, 5))
+
+
+def _get_auth_key(name: str) -> Optional[str]:
+    try:
+        return st.secrets.get("seoul_api", {}).get(name)
+    except Exception:
+        return None
+
+
+real_congestion = None
+if transport == "지하철":
+    auth_key = _get_auth_key("subway_congestion_key")
+    real_congestion = seoul_api.get_real_congestion_series(
+        auth_key, dep_station, dep_time.hour, dep_time.minute, MINUTES_OFFSET
+    )
+
+real_congestion_pct = tuple(real_congestion["congestion_pct"]) if real_congestion else None
+real_line = real_congestion["line"] if real_congestion else None
+
+df, wait_spot, is_real, data_line = generate_prediction(
+    transport, dep_station, arr_station, dep_time.hour, dep_time.minute, real_congestion_pct, real_line
+)
 
 current_congestion = df.iloc[0]["congestion_pct"]
 current_seat_prob = df.iloc[0]["seat_prob_pct"]
@@ -191,13 +233,21 @@ best_offset = int(best_row["minutes_offset"])
 best_prob = best_row["seat_prob_pct"]
 best_time_label = best_row["time_label"]
 
+if is_real:
+    badge_text = f"✅ 서울시 공공데이터 기반 혼잡도 · {data_line} · 평일"
+    badge_color = "#00cec9"
+else:
+    badge_text = "⚠️ Mock Data (해당 역의 실데이터를 찾지 못해 추정치 표시 중)"
+    badge_color = "#feca57"
+
 st.markdown(
     f"""
     <div class="guide-box">
         <div class="headline">{level_emoji} 현재 시간 혼잡도 {current_congestion:.0f}% ({level_label})</div>
-        <div style="color:#c8ccd6; font-size:0.9rem;">
+        <div style="color:#c8ccd6; font-size:0.9rem; margin-bottom:8px;">
             {dep_station} → {arr_station} · {transport} · 기준 시각 {dep_time.strftime('%H:%M')}
         </div>
+        <div style="color:{badge_color}; font-size:0.78rem; font-weight:700;">{badge_text}</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -293,6 +343,8 @@ fig.add_vline(
     annotation_font_color="#00cec9",
 )
 
+y_upper = max(100, float(df[["congestion_pct", "seat_prob_pct"]].to_numpy().max()) * 1.1)
+
 fig.update_layout(
     template="plotly_dark",
     height=430,
@@ -305,7 +357,7 @@ fig.update_layout(
         tickvals=df["minutes_offset"],
         ticktext=df["time_label"],
     ),
-    yaxis=dict(title="확률 / 혼잡도 (%)", range=[0, 100]),
+    yaxis=dict(title="확률 / 혼잡도 (%)", range=[0, y_upper]),
     plot_bgcolor="#0f1116",
     paper_bgcolor="#0f1116",
 )
@@ -313,5 +365,8 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 st.caption(
-    "⚠️ 본 대시보드는 프로토타입으로, 실제 서울시 공공데이터 API 연동 전 Mock Data를 기반으로 동작합니다."
+    "⚠️ 앉아서 갈 확률은 혼잡도로부터 유도한 추정치이며 실측값이 아닙니다. "
+    "혼잡도는 실데이터를 찾은 경우 서울시 공공데이터(서울교통공사 지하철혼잡도정보)를, "
+    "찾지 못한 경우 Mock Data를 사용합니다. 혼잡도가 100%를 넘는 경우는 정원 대비 "
+    "혼잡 승객 수가 정원을 초과했다는 뜻으로, 원본 데이터의 정상적인 표기입니다."
 )
