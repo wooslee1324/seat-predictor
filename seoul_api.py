@@ -1,11 +1,16 @@
-"""서울 열린데이터광장 실데이터 연동. 지금은 지하철 혼잡도(subwConfusion)만 지원한다.
+"""서울 열린데이터광장 실데이터 연동.
 
-subwConfusion API는 역/노선으로 필터링하는 요청 파라미터가 없어서, 전체 데이터
-(약 1,671건)를 한 번에 받아 캐싱한 뒤 파이썬에서 역명으로 걸러낸다. 데이터
-갱신주기가 분기별이라 캐시 TTL을 길게(30일) 잡는다.
+- 지하철 혼잡도(subwConfusion): 예측용 실데이터. 시간대별 값을 제공해 좌석 확률
+  곡선 계산에 직접 쓰인다.
+- 버스 정류장 승하차 인원(CardBusStatisticsServiceNew): 참고 지표 전용. 이
+  API는 정류장/노선당 "하루 총합"만 주고 시간대 구분이 없어서 예측(혼잡도·좌석
+  확률) 계산에는 쓸 수 없다 — "오늘 이 정류장 하루 이용객 약 N명" 같은 트리비아
+  로만 노출한다.
 """
 
+from datetime import date, timedelta
 from typing import Optional
+import re
 
 import numpy as np
 import pandas as pd
@@ -13,10 +18,18 @@ import requests
 import streamlit as st
 import xml.etree.ElementTree as ET
 
+SEOUL_OPENAPI_BASE_URL = "http://openapi.seoul.go.kr:8088"
+
 CONGESTION_SERVICE = "subwConfusion"
-CONGESTION_BASE_URL = "http://openapi.seoul.go.kr:8088"
 CONGESTION_PAGE_SIZE = 1000
 CONGESTION_CACHE_TTL = 60 * 60 * 24 * 30  # 30일 — 데이터가 분기별로만 갱신됨
+
+BUS_RIDERSHIP_SERVICE = "CardBusStatisticsServiceNew"
+BUS_RIDERSHIP_PAGE_SIZE = 1000
+BUS_RIDERSHIP_MAX_PAGES = 60  # 안전판 — 하루 전체가 약 41,500건(=42페이지)
+BUS_RIDERSHIP_CACHE_TTL = 60 * 60 * 24  # 하루 — use_date가 매일 바뀌므로 자연 갱신
+BUS_RIDERSHIP_DATA_LAG_DAYS = 3  # "매일 3일전 데이터를 갱신" — README/데이터셋 설명 기준
+BUS_RIDERSHIP_MAX_MATCHED_STOPS = 15  # 이보다 많이 매칭되면 너무 모호하다고 보고 표시 안 함
 
 
 def _time_columns():
@@ -34,7 +47,7 @@ def _fetch_all_rows(auth_key: str) -> list:
     start = 1
     while True:
         end = start + CONGESTION_PAGE_SIZE - 1
-        url = f"{CONGESTION_BASE_URL}/{auth_key}/xml/{CONGESTION_SERVICE}/{start}/{end}/"
+        url = f"{SEOUL_OPENAPI_BASE_URL}/{auth_key}/xml/{CONGESTION_SERVICE}/{start}/{end}/"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
@@ -141,4 +154,91 @@ def get_real_congestion_series(
         "congestion_pct": np.interp(requested, x, y),
         "line": line_used,
         "dow": dow,
+    }
+
+
+def _fetch_bus_rows(auth_key: str, use_date: str) -> list:
+    rows = []
+    start = 1
+    for _ in range(BUS_RIDERSHIP_MAX_PAGES):
+        end = start + BUS_RIDERSHIP_PAGE_SIZE - 1
+        url = f"{SEOUL_OPENAPI_BASE_URL}/{auth_key}/xml/{BUS_RIDERSHIP_SERVICE}/{start}/{end}/{use_date}/"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        code = root.findtext("RESULT/CODE")
+        if code and code != "INFO-000":
+            raise RuntimeError(f"Seoul API error {code}: {root.findtext('RESULT/MESSAGE')}")
+
+        total = int(root.findtext("list_total_count", "0"))
+        row_elements = root.findall("row")
+        rows.extend({child.tag: child.text for child in row_el} for row_el in row_elements)
+
+        if not row_elements or start + len(row_elements) - 1 >= total:
+            break
+        start += BUS_RIDERSHIP_PAGE_SIZE
+    return rows
+
+
+@st.cache_data(ttl=BUS_RIDERSHIP_CACHE_TTL, show_spinner=False)
+def _load_bus_ridership_table(auth_key: str, use_date: str) -> pd.DataFrame:
+    records = [
+        {
+            "stop_name": row.get("SBWY_STNS_NM"),
+            "route_name": row.get("RTE_NM"),
+            "boarding": float(row["GTON_TNOPE"]) if row.get("GTON_TNOPE") else 0.0,
+            "alighting": float(row["GTOFF_TNOPE"]) if row.get("GTOFF_TNOPE") else 0.0,
+        }
+        for row in _fetch_bus_rows(auth_key, use_date)
+    ]
+    return pd.DataFrame.from_records(records)
+
+
+def _clean_bus_stop_name(name: str) -> str:
+    """정류장명 끝의 ARS 번호 괄호를 뗀다 — '강남역10번출구(00041)' -> '강남역10번출구'."""
+    return re.sub(r"\([^)]*\)$", "", name or "").strip()
+
+
+def get_bus_ridership_stat(auth_key: Optional[str], stop_name: str, use_date: Optional[str] = None) -> Optional[dict]:
+    """정류장 하루 총 승하차 인원(참고 지표). 좌석 확률/혼잡도 계산에는 쓰이지 않는다.
+
+    CardBusStatisticsServiceNew는 정류장명 필터 파라미터가 없어 하루 전체(약
+    41,500건)를 받아서 우리 쪽에서 걸러야 하고, 이름 표기도 'OO역10번출구(ARS번호)'
+    형태라 사용자가 입력한 문자열과 정확히 일치하지 않는 경우가 많다. 입력을
+    '.'/공백 기준으로 토큰화해 부분일치하는 정류장을 모두 찾고, 매칭된 정류장
+    수가 너무 많으면(15개 초과) 너무 모호하다고 보고 None을 반환한다.
+    """
+    if not auth_key:
+        return None
+    if use_date is None:
+        use_date = (date.today() - timedelta(days=BUS_RIDERSHIP_DATA_LAG_DAYS)).strftime("%Y%m%d")
+
+    try:
+        table = _load_bus_ridership_table(auth_key, use_date)
+    except Exception:
+        return None
+    if table.empty:
+        return None
+
+    tokens = [t for t in re.split(r"[.\s]", stop_name.strip()) if len(t) >= 2]
+    if not tokens:
+        return None
+
+    clean_names = table["stop_name"].map(_clean_bus_stop_name)
+    mask = clean_names.apply(lambda c: any(t in c for t in tokens))
+    matched = table[mask]
+    if matched.empty:
+        return None
+
+    stop_count = matched["stop_name"].nunique()
+    if stop_count > BUS_RIDERSHIP_MAX_MATCHED_STOPS:
+        return None  # 너무 광범위하게 매칭됨 — 신뢰할 수 없는 집계라 표시하지 않음
+
+    return {
+        "boarding": int(matched["boarding"].sum()),
+        "alighting": int(matched["alighting"].sum()),
+        "stop_count": stop_count,
+        "route_count": matched["route_name"].nunique(),
+        "date": use_date,
     }

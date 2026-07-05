@@ -108,14 +108,17 @@ click button:has-text("좌석 확률 예측하기")
 wait 2500
 ```
 
-Bus (still free text):
+Bus (still free text) — also triggers the bus ridership reference-stat
+lookup (`get_bus_ridership_stat`), which is slow (10-20s) on the first
+call of the day and instant afterward (see Gotchas), so give it a much
+longer `wait` than the subway flow:
 
 ```
 click text=버스
-fill input[aria-label='출발역 / 정류장'] 강남역.강남역사거리
+fill input[aria-label='출발역 / 정류장'] 강남역10번출구
 fill input[aria-label='도착역 / 정류장'] 사당역4번출구
 click button:has-text("좌석 확률 예측하기")
-wait 2500
+wait 20000
 ```
 
 (Use single quotes around selectors that contain a space or `>>`
@@ -143,6 +146,13 @@ above plus `console-errors` returning `[]`.
 
 ## Gotchas
 
+- **버스 모드's ridership reference stat (`get_bus_ridership_stat`) fetches
+  a whole day's bus data (~41,500 rows, 42 paginated API calls) on a cache
+  miss — the first submit in 버스 mode each day takes 10-20s, not the ~2.5s
+  a subway submit needs.** Subsequent bus submits (same day, any stop) hit
+  the cache and return instantly. Give the first bus-mode `wait` in a
+  script 20000ms+, or the screenshot captures Streamlit's dimmed
+  "running" state with stale results still showing.
 - **Streamlit's content scrolls inside `<section data-testid="stMain">`,
   not the document body.** Both `page.screenshot({ fullPage: true })` and
   even a locator screenshot on `[data-testid="stAppViewContainer"]` only

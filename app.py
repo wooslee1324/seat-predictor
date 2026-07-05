@@ -111,6 +111,7 @@ def _get_auth_key(name: str) -> Optional[str]:
 
 
 CONGESTION_AUTH_KEY = _get_auth_key("subway_congestion_key")
+BUS_RIDERSHIP_AUTH_KEY = _get_auth_key("bus_ridership_key")
 SUBWAY_STATION_OPTIONS = seoul_api.get_station_options(CONGESTION_AUTH_KEY)
 
 
@@ -198,7 +199,7 @@ with st.form("route_form"):
             dep_station = st.selectbox("출발역 / 정류장", SUBWAY_STATION_OPTIONS, index=default_idx)
         else:
             dep_station = st.text_input(
-                "출발역 / 정류장", value="강남역" if transport == "지하철" else "강남역.강남역사거리"
+                "출발역 / 정류장", value="강남역" if transport == "지하철" else "강남역10번출구"
             )
     with c2:
         if transport == "지하철" and SUBWAY_STATION_OPTIONS:
@@ -228,6 +229,13 @@ if transport == "지하철":
 
 real_congestion_pct = tuple(real_congestion["congestion_pct"]) if real_congestion else None
 real_line = real_congestion["line"] if real_congestion else None
+
+bus_ridership = None
+if transport == "버스" and BUS_RIDERSHIP_AUTH_KEY:
+    # 하루치 전체(약 41,500건)를 처음 받아올 때만 느리다(수십 초) — 캐시된 이후
+    # 조회는 즉시 끝난다. 첫 조회 때만 이유를 알 수 있게 스피너를 보여준다.
+    with st.spinner("버스 정류장 이용객 데이터를 불러오는 중... (하루 한 번만, 최초 조회 시 다소 걸릴 수 있어요)"):
+        bus_ridership = seoul_api.get_bus_ridership_stat(BUS_RIDERSHIP_AUTH_KEY, dep_station)
 
 df, wait_spot, is_real, data_line = generate_prediction(
     transport, dep_station, arr_station, dep_time.hour, dep_time.minute, real_congestion_pct, real_line
@@ -316,6 +324,24 @@ with m3:
             <div class="label">추천 대기 위치</div>
             <div class="value" style="font-size:1.3rem;">{wait_spot}</div>
             <div class="sub">{best_offset}분 뒤 탑승 기준</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+if bus_ridership:
+    total = bus_ridership["boarding"] + bus_ridership["alighting"]
+    st.markdown(
+        f"""
+        <div style="margin-top:14px; padding:10px 16px; border-radius:10px;
+                    background:#171a21; border:1px solid #262b36;
+                    color:#9aa0ac; font-size:0.82rem;">
+            📊 <b style="color:#c8ccd6;">참고 지표</b> — {bus_ridership['date']} 기준
+            "{dep_station}"과(와) 이름이 겹치는 정류장 {bus_ridership['stop_count']}곳
+            (버스 {bus_ridership['route_count']}개 노선 합산) 하루 총 이용객 약
+            <b style="color:#c8ccd6;">{total:,}명</b>
+            (승차 {bus_ridership['boarding']:,} · 하차 {bus_ridership['alighting']:,}).
+            혼잡도·좌석 확률 계산에는 반영되지 않는 참고용 수치입니다.
         </div>
         """,
         unsafe_allow_html=True,
