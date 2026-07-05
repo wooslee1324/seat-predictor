@@ -12,10 +12,13 @@
 
 |                                                    |                                                    |
 | -------------------------------------------------- | -------------------------------------------------- |
-| 지하철 · 강남역 → 사당역 · 08:00 (여유) | 지하철 · 신도림역 → 홍대입구역 · 14:00 (보통) |
-| ![지하철 08:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_gangnam_sadang_0800.png) | ![지하철 14:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_sindorim_hongdae_1400.png) |
-| 버스 · 강남역.강남역사거리 → 사당역4번출구 · 18:30 (매우 혼잡) | 지하철 · 잠실역 → 강남역 · 22:00 (여유) |
-| ![버스 18:30 스크린샷](.claude/skills/run-seat-predictor/screenshots/bus_gangnam_sadang_1830.png) | ![지하철 22:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_jamsil_gangnam_2200.png) |
+| 지하철 · 강남역 → 사당역 · 18:30 (✅ 실데이터 · 2호선 · 매우 혼잡) | 역 이름 검색(selectbox) · 잠실역 → 홍대입구역 (✅ 실데이터) |
+| ![지하철 실데이터 스크린샷](.claude/skills/run-seat-predictor/screenshots/real_gangnam_1830.png) | ![역 이름 검색 selectbox 스크린샷](.claude/skills/run-seat-predictor/screenshots/selectbox_subway.png) |
+| 매핑되지 않은 역 → Mock Data 폴백 (⚠️ 배지 표시) | 버스 모드 · 자유 텍스트 입력 (⚠️ Mock Data) |
+| ![Mock 폴백 스크린샷](.claude/skills/run-seat-predictor/screenshots/fallback_unknown_station.png) | ![버스 모드 스크린샷](.claude/skills/run-seat-predictor/screenshots/bus_full_flow.png) |
+
+혼잡도가 실데이터로 확인된 경우 ✅ 배지와 함께 노선/기준 요일이 표시되고,
+매핑에 없는 역이거나 API를 쓸 수 없는 경우 ⚠️ Mock Data 배지로 자동 전환됩니다.
 
 ## 🚀 실행 방법
 
