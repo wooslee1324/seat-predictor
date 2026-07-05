@@ -6,6 +6,15 @@
 "몇 분 뒤에 타면 앉아서 갈 수 있는지" 알려주는 대시보드입니다.
 현재는 **Streamlit + Mock Data**로 만든 프로토타입(MVP) 단계입니다.
 
+## 📸 스크린샷
+
+|                                                    |                                                    |
+| -------------------------------------------------- | -------------------------------------------------- |
+| 지하철 · 강남역 → 사당역 · 08:00 (여유) | 지하철 · 신도림역 → 홍대입구역 · 14:00 (보통) |
+| ![지하철 08:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_gangnam_sadang_0800.png) | ![지하철 14:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_sindorim_hongdae_1400.png) |
+| 버스 · 강남역.강남역사거리 → 사당역4번출구 · 18:30 (매우 혼잡) | 지하철 · 잠실역 → 강남역 · 22:00 (여유) |
+| ![버스 18:30 스크린샷](.claude/skills/run-seat-predictor/screenshots/bus_gangnam_sadang_1830.png) | ![지하철 22:00 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_jamsil_gangnam_2200.png) |
+
 ## 🚀 실행 방법
 
 ### 1. 가상환경 생성 및 활성화
