@@ -80,6 +80,24 @@ def _station_name_variants(name: str) -> list:
     return [name, name + "역"]
 
 
+def _display_name(raw_name: str) -> str:
+    """UI에 보여줄 표준 표기 — '강남' -> '강남역', '서울역' -> '서울역' 그대로."""
+    return raw_name if raw_name.endswith("역") else f"{raw_name}역"
+
+
+def get_station_options(auth_key: Optional[str]) -> list:
+    """selectbox에 채울 실제 지하철 역명 목록. 조회 실패 시 빈 리스트를 반환하므로
+    호출부에서 비어 있으면 자유 텍스트 입력으로 폴백해야 한다."""
+    if not auth_key:
+        return []
+    try:
+        table = _load_congestion_table(auth_key)
+    except Exception:
+        return []
+    names = {_display_name(n) for n in table["station"].dropna().unique()}
+    return sorted(names)
+
+
 def get_real_congestion_series(
     auth_key: Optional[str],
     station_name: str,

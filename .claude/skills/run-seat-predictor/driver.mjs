@@ -56,9 +56,19 @@ async function handle(line) {
   if (!trimmed || trimmed.startsWith("#")) return;
   // Tokenize on whitespace, but keep 'single' or "double" quoted runs glued
   // together as one token — needed for CSS attribute selectors that embed a
-  // space, e.g. input[aria-label='출발역 / 정류장']. Quotes are kept as-is
-  // (not stripped) since that's valid CSS attribute-selector syntax.
-  const tokens = trimmed.match(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g) || [];
+  // space, e.g. input[aria-label='출발역 / 정류장']. Quotes embedded mid-token
+  // (that case) are kept as-is since they're valid CSS attribute-selector
+  // syntax. But if the WHOLE token is wrapped by one matching quote pair —
+  // e.g. a Playwright chained selector like '[data-testid="x"] >> nth=0'
+  // that only needed quoting to survive tokenization — the wrapping quotes
+  // are stripped. Playwright treats a selector string that *starts* with a
+  // quote char as its `text=` engine shorthand, so leaving them on breaks
+  // anything that isn't literal text matching.
+  const rawTokens = trimmed.match(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g) || [];
+  const tokens = rawTokens.map((t) => {
+    const q = t[0];
+    return (q === "'" || q === '"') && t.length >= 2 && t[t.length - 1] === q ? t.slice(1, -1) : t;
+  });
   const [cmd, ...rest] = tokens;
   const arg = rest.join(" ");
   await ensureBrowser();

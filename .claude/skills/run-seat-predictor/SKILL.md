@@ -84,20 +84,48 @@ kill $(cat /tmp/streamlit.pid) 2>/dev/null; pkill -f "streamlit run app.py"
 | `quit` | closes the browser and exits |
 
 To exercise the form (pick a different route/time before shooting), insert
-before the `screenshot` line:
+before the `screenshot` line. **The 출발/도착 widgets differ by transport
+mode:** for 지하철 they're a searchable `st.selectbox` (populated live from
+the real congestion API's station list when a key is configured); for 버스
+they're still a plain `st.text_input`.
+
+`교통수단` (지하철/버스) is a standalone `st.radio` OUTSIDE `st.form` — it
+rerenders the form's widgets (selectbox vs text_input) immediately on
+click. Everything else (stations, time, submit) is inside the form and
+only takes effect on the submit button click.
+
+Subway (selectbox — type into it, don't try to click an option by text;
+the option list is virtualized so an option outside the visible viewport
+doesn't exist in the DOM yet and `click` will time out):
 
 ```
-fill input[aria-label='출발역 / 정류장'] 신도림역
-fill input[aria-label='도착역 / 정류장'] 홍대입구역
+click '[data-testid="stSelectbox"] >> nth=0'
+fill '[data-testid="stSelectbox"] input >> nth=0' 신도림역
+press Enter
+fill '[data-testid="stSelectbox"] input >> nth=1' 홍대입구역
+press Enter
 click button:has-text("좌석 확률 예측하기")
 wait 2500
 ```
 
-(Use single quotes around the attribute value, not double — the driver's
-tokenizer glues a quoted run together to survive the embedded space, and
-double-quoting here would nest inside `button:has-text("...")` elsewhere
-in the same script. Single quotes for selectors, double quotes for
-Playwright's own `:has-text(...)` syntax.)
+Bus (still free text):
+
+```
+click text=버스
+fill input[aria-label='출발역 / 정류장'] 강남역.강남역사거리
+fill input[aria-label='도착역 / 정류장'] 사당역4번출구
+click button:has-text("좌석 확률 예측하기")
+wait 2500
+```
+
+(Use single quotes around selectors that contain a space or `>>`
+chaining, not double — the driver's tokenizer glues a quoted run together
+to survive the embedded space, then strips the wrapping quotes *only*
+when the whole token is one matched quote pair, so
+`'[data-testid="stSelectbox"] input >> nth=0'` comes out as a clean
+chained selector. Double-quoting here would nest inside
+`button:has-text("...")` elsewhere in the same script — reserve double
+quotes for Playwright's own `:has-text("...")` syntax.)
 
 ## Run (human path)
 
@@ -135,6 +163,35 @@ above plus `console-errors` returning `[]`.
   attribute value in single quotes — `input[aria-label='출발역 / 정류장']`
   — and reserve double quotes for Playwright's own `:has-text("...")`
   syntax so the two don't nest inside a single unescaped token.
+- **A selector wrapped entirely in one quote pair — e.g.
+  `'[data-testid="stSelectbox"] input >> nth=0'` — used to come out of the
+  tokenizer with the quotes still attached, and Playwright treats a
+  selector string that *starts* with a quote char as shorthand for its
+  `text=` engine (exact text match), not a real selector.** That silently
+  turned every such `fill`/`click` into a doomed text search
+  (`Timeout 30000ms exceeded` waiting on `text='...'`). Fixed in
+  `driver.mjs`: after tokenizing, if a token is wrapped by one matching
+  quote pair start-to-end, the wrapping quotes are stripped; quotes
+  embedded *mid*-token (e.g. `input[aria-label='...']`, which doesn't
+  start with a quote char) are left alone since they're real CSS syntax.
+- **Streamlit's station `st.selectbox` is virtualized and doesn't accept
+  a real DOM `<input>` you'd expect — it has exactly one, found via
+  `[data-testid="stSelectbox"] input`.** With two selectboxes on the page
+  (출발/도착), scope with Playwright's `>> nth=0` / `>> nth=1` chaining,
+  not a bare `input[aria-label=...]` (there's no such attribute on the
+  selectbox's input). Typing a search term via `fill` + `press Enter` is
+  the reliable path; clicking a specific `[role="option"]` by text can
+  time out for stations outside the initially-rendered (virtualized)
+  window.
+- **`교통수단` must live outside `st.form` to be useful for driving the
+  app.** It was originally a widget *inside* the form alongside the
+  station inputs — inside a form, Streamlit only sends the script a
+  widget's new value on submit, so clicking 버스 flipped the radio's own
+  visual state instantly (client-side) but left the station widgets
+  rendering with the *previous* submission's transport mode (still a
+  subway selectbox) until submit — requiring two submits to actually
+  reach the bus text inputs. Moved the radio outside the form so it
+  reruns (and swaps the widget type) immediately on click.
 - **The `readline` "line" event races the stream's "close" event.** An
   earlier version of `driver.mjs` used `readline.createInterface` and
   called `browser.close()` in the `close` handler — with a heredoc, stdin

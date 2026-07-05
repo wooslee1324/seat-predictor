@@ -103,6 +103,17 @@ SUBWAY_DOOR_OPTIONS = [f"{car}-{door}번" for car in range(1, 10) for door in ra
 BUS_POSITION_OPTIONS = ["앞문 바로 뒤 좌석 쪽", "중간문 근처 2인석 쪽", "뒷문 앞 교통약자석 반대편", "앞문 쪽 1인석 라인"]
 
 
+def _get_auth_key(name: str) -> Optional[str]:
+    try:
+        return st.secrets.get("seoul_api", {}).get(name)
+    except Exception:
+        return None
+
+
+CONGESTION_AUTH_KEY = _get_auth_key("subway_congestion_key")
+SUBWAY_STATION_OPTIONS = seoul_api.get_station_options(CONGESTION_AUTH_KEY)
+
+
 def congestion_level(pct: float):
     if pct >= 80:
         return "매우 혼잡", "🔴"
@@ -177,19 +188,27 @@ def generate_prediction(
     return df, wait_spot, is_real, real_line
 
 
+transport = st.radio("교통수단", ["지하철", "버스"], horizontal=True)
+
 with st.form("route_form"):
-    c1, c2, c3, c4 = st.columns([1, 1.4, 1.4, 1])
+    c1, c2, c3 = st.columns([1.4, 1.4, 1])
     with c1:
-        transport = st.radio("교통수단", ["지하철", "버스"], horizontal=True)
+        if transport == "지하철" and SUBWAY_STATION_OPTIONS:
+            default_idx = SUBWAY_STATION_OPTIONS.index("강남역") if "강남역" in SUBWAY_STATION_OPTIONS else 0
+            dep_station = st.selectbox("출발역 / 정류장", SUBWAY_STATION_OPTIONS, index=default_idx)
+        else:
+            dep_station = st.text_input(
+                "출발역 / 정류장", value="강남역" if transport == "지하철" else "강남역.강남역사거리"
+            )
     with c2:
-        dep_station = st.text_input(
-            "출발역 / 정류장", value="강남역" if transport == "지하철" else "강남역.강남역사거리"
-        )
+        if transport == "지하철" and SUBWAY_STATION_OPTIONS:
+            default_idx = SUBWAY_STATION_OPTIONS.index("사당역") if "사당역" in SUBWAY_STATION_OPTIONS else 0
+            arr_station = st.selectbox("도착역 / 정류장", SUBWAY_STATION_OPTIONS, index=default_idx)
+        else:
+            arr_station = st.text_input(
+                "도착역 / 정류장", value="사당역" if transport == "지하철" else "사당역4번출구"
+            )
     with c3:
-        arr_station = st.text_input(
-            "도착역 / 정류장", value="사당역" if transport == "지하철" else "사당역4번출구"
-        )
-    with c4:
         dep_time = st.time_input("퇴근(출발) 시간", value=time(18, 30))
 
     submitted = st.form_submit_button("🔍 좌석 확률 예측하기", use_container_width=True)
@@ -201,19 +220,10 @@ transport, dep_station, arr_station, dep_time = st.session_state.last_inputs
 
 MINUTES_OFFSET = list(range(0, 65, 5))
 
-
-def _get_auth_key(name: str) -> Optional[str]:
-    try:
-        return st.secrets.get("seoul_api", {}).get(name)
-    except Exception:
-        return None
-
-
 real_congestion = None
 if transport == "지하철":
-    auth_key = _get_auth_key("subway_congestion_key")
     real_congestion = seoul_api.get_real_congestion_series(
-        auth_key, dep_station, dep_time.hour, dep_time.minute, MINUTES_OFFSET
+        CONGESTION_AUTH_KEY, dep_station, dep_time.hour, dep_time.minute, MINUTES_OFFSET
     )
 
 real_congestion_pct = tuple(real_congestion["congestion_pct"]) if real_congestion else None
