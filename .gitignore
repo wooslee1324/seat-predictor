@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .streamlit/
+
+# run-seat-predictor skill driver
+.claude/skills/run-seat-predictor/node_modules/
+.claude/skills/run-seat-predictor/screenshots/

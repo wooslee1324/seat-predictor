@@ -1,0 +1,9 @@
+{
+  "name": "run-seat-predictor-driver",
+  "private": true,
+  "type": "module",
+  "description": "Playwright driver used by the run-seat-predictor skill to drive the Streamlit app headlessly.",
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}
