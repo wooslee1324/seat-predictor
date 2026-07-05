@@ -6,23 +6,24 @@
 "몇 분 뒤에 타면 앉아서 갈 수 있는지" 알려주는 대시보드입니다.
 현재는 **Streamlit** 기반 프로토타입(MVP)이며, 지하철 혼잡도는 서울시 공공데이터
 (서울교통공사 지하철혼잡도정보 Open API)를 실시간으로 연동하고, 매핑되지 않은
-역/버스 데이터는 Mock Data로 대체됩니다. 버스 모드에서는 정류장 하루 총
-승하차 인원(서울시 버스노선별 정류장별 승하차 인원 정보)을 참고 지표로 함께
+역/버스 데이터는 Mock Data로 대체됩니다. 지하철/버스 모드 모두 역·정류장의
+하루 총 승하차 인원(서울시 지하철/버스 승하차 인원 정보)을 참고 지표로 함께
 보여줍니다.
 
 ## 📸 스크린샷
 
 |                                                    |                                                    |
 | -------------------------------------------------- | -------------------------------------------------- |
-| 지하철 · 강남역 → 사당역 · 18:30 (✅ 실데이터 · 2호선 · 매우 혼잡) | 역 이름 검색(selectbox) · 잠실역 → 홍대입구역 (✅ 실데이터) |
-| ![지하철 실데이터 스크린샷](.claude/skills/run-seat-predictor/screenshots/real_gangnam_1830.png) | ![역 이름 검색 selectbox 스크린샷](.claude/skills/run-seat-predictor/screenshots/selectbox_subway.png) |
+| 지하철 · 강남역 → 사당역 · 18:30 (✅ 실데이터 · 2호선 + 참고 지표) | 역 이름 검색(selectbox) · 잠실역 → 홍대입구역 (✅ 실데이터) |
+| ![지하철 실데이터 + 참고 지표 스크린샷](.claude/skills/run-seat-predictor/screenshots/subway_ridership_stat.png) | ![역 이름 검색 selectbox 스크린샷](.claude/skills/run-seat-predictor/screenshots/selectbox_subway.png) |
 | 매핑되지 않은 역 → Mock Data 폴백 (⚠️ 배지 표시) | 버스 모드 · 정류장 하루 이용객 참고 지표 |
 | ![Mock 폴백 스크린샷](.claude/skills/run-seat-predictor/screenshots/fallback_unknown_station.png) | ![버스 모드 참고 지표 스크린샷](.claude/skills/run-seat-predictor/screenshots/bus_ridership_cached_load.png) |
 
 혼잡도가 실데이터로 확인된 경우 ✅ 배지와 함께 노선/기준 요일이 표시되고,
 매핑에 없는 역이거나 API를 쓸 수 없는 경우 ⚠️ Mock Data 배지로 자동 전환됩니다.
-버스 모드에서는 혼잡도·좌석 확률 계산과 무관하게, 정류장 이름이 겹치는 버스
-정류장들의 하루 총 승하차 인원을 "📊 참고 지표"로 별도 표시합니다.
+혼잡도·좌석 확률 계산과는 무관하게, 지하철은 해당 역(전 노선 합산), 버스는
+정류장 이름이 겹치는 정류장들의 하루 총 승하차 인원을 "📊 참고 지표"로 별도
+표시합니다.
 
 ## 🚀 실행 방법
 
@@ -46,24 +47,27 @@ pip install -r requirements.txt
 
 ### 3. (선택) 서울시 공공데이터 인증키 설정
 
-지하철 혼잡도를 실데이터로 보거나 버스 참고 지표를 보려면 인증키가 필요합니다.
-없어도 앱은 정상 동작하며, 이 경우 해당 값은 Mock Data로 표시되거나 참고
-지표가 표시되지 않습니다.
+지하철 혼잡도를 실데이터로 보거나 지하철/버스 참고 지표를 보려면 인증키가
+필요합니다. 없어도 앱은 정상 동작하며, 이 경우 해당 값은 Mock Data로
+표시되거나 참고 지표가 표시되지 않습니다.
 
 1. https://data.seoul.go.kr 회원가입 후 로그인
 2. [인증키 신청](https://data.seoul.go.kr/together/mypage/actkeyMain.do) — 즉시 무료 발급
-   (지하철 혼잡도용, 버스 승하차용 각각 발급받아도 되고 하나로 재사용해도 됩니다)
+   (지하철 혼잡도용, 지하철 승하차용, 버스 승하차용 각각 발급받아도 되고
+   하나로 재사용해도 됩니다)
 3. `.streamlit/secrets.toml.example`을 `.streamlit/secrets.toml`로 복사 후 발급받은 키를 입력
    (`secrets.toml`은 `.gitignore`에 등록되어 있어 커밋되지 않습니다)
 
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# .streamlit/secrets.toml을 열어 subway_congestion_key / bus_ridership_key 값을 채워넣으세요
+# .streamlit/secrets.toml을 열어 subway_congestion_key / subway_ridership_key /
+# bus_ridership_key 값을 채워넣으세요
 ```
 
 버스 참고 지표는 정류장당 필터 없이 하루 전체 데이터(약 4만여 건)를 받아와
 캐싱하기 때문에, 버스 모드로 **처음** 조회할 때만 10~20초 정도 걸립니다.
-이후 조회(같은 날짜 내)는 캐시에서 즉시 응답합니다.
+이후 조회(같은 날짜 내)는 캐시에서 즉시 응답합니다. 지하철 참고 지표는
+하루 전체가 618건 정도라 느리지 않습니다.
 
 ### 4. 앱 실행
 
@@ -81,8 +85,9 @@ streamlit run app.py
 
 ## 📊 관련 데이터셋 링크 (서울시 열린데이터광장)
 
-1. 지하철 시간대별 승하차 데이터 (⏸ 보류 — Open API가 시간대 구분 없는 하루
-   총합만 제공해 예측 로직에는 부적합함을 확인. 상세는 `seoul_api.py` 주석 참고)
+1. 지하철 시간대별 승하차 데이터 (📊 참고 지표로 연동됨 — `seoul_api.py`,
+   Open API 서비스명 `CardSubwayStatsNew`. 이름과 달리 시간대 구분 없는 하루
+   총합만 제공되어 예측 로직에는 부적합함을 확인, 역 하루 이용객 트리비아로만 사용)
    - [서울시 지하철 호선별 역별 시간대별 승하차 인원 정보](https://data.seoul.go.kr/dataList/OA-12914/S/1/datasetView.do)
 2. 버스 시간대별 승하차 데이터 (📊 참고 지표로 연동됨 — `seoul_api.py`,
    Open API 서비스명 `CardBusStatisticsServiceNew`. 마찬가지로 하루 총합만

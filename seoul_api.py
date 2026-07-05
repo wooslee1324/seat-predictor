@@ -2,10 +2,10 @@
 
 - 지하철 혼잡도(subwConfusion): 예측용 실데이터. 시간대별 값을 제공해 좌석 확률
   곡선 계산에 직접 쓰인다.
-- 버스 정류장 승하차 인원(CardBusStatisticsServiceNew): 참고 지표 전용. 이
-  API는 정류장/노선당 "하루 총합"만 주고 시간대 구분이 없어서 예측(혼잡도·좌석
-  확률) 계산에는 쓸 수 없다 — "오늘 이 정류장 하루 이용객 약 N명" 같은 트리비아
-  로만 노출한다.
+- 지하철 역 승하차 인원(CardSubwayStatsNew) / 버스 정류장 승하차 인원
+  (CardBusStatisticsServiceNew): 둘 다 참고 지표 전용. 역·정류장/노선당
+  "하루 총합"만 주고 시간대 구분이 없어서 예측(혼잡도·좌석 확률) 계산에는 쓸 수
+  없다 — "오늘 이 역/정류장 하루 이용객 약 N명" 같은 트리비아로만 노출한다.
 """
 
 from datetime import date, timedelta
@@ -30,6 +30,12 @@ BUS_RIDERSHIP_MAX_PAGES = 60  # 안전판 — 하루 전체가 약 41,500건(=42
 BUS_RIDERSHIP_CACHE_TTL = 60 * 60 * 24  # 하루 — use_date가 매일 바뀌므로 자연 갱신
 BUS_RIDERSHIP_DATA_LAG_DAYS = 3  # "매일 3일전 데이터를 갱신" — README/데이터셋 설명 기준
 BUS_RIDERSHIP_MAX_MATCHED_STOPS = 15  # 이보다 많이 매칭되면 너무 모호하다고 보고 표시 안 함
+
+SUBWAY_RIDERSHIP_SERVICE = "CardSubwayStatsNew"
+SUBWAY_RIDERSHIP_PAGE_SIZE = 1000
+SUBWAY_RIDERSHIP_MAX_PAGES = 5  # 안전판 — 하루 전체가 약 618건(1페이지면 충분)
+SUBWAY_RIDERSHIP_CACHE_TTL = 60 * 60 * 24  # 하루
+SUBWAY_RIDERSHIP_DATA_LAG_DAYS = 3
 
 
 def _time_columns():
@@ -240,5 +246,78 @@ def get_bus_ridership_stat(auth_key: Optional[str], stop_name: str, use_date: Op
         "alighting": int(matched["alighting"].sum()),
         "stop_count": stop_count,
         "route_count": matched["route_name"].nunique(),
+        "date": use_date,
+    }
+
+
+def _fetch_subway_ridership_rows(auth_key: str, use_date: str) -> list:
+    rows = []
+    start = 1
+    for _ in range(SUBWAY_RIDERSHIP_MAX_PAGES):
+        end = start + SUBWAY_RIDERSHIP_PAGE_SIZE - 1
+        url = f"{SEOUL_OPENAPI_BASE_URL}/{auth_key}/xml/{SUBWAY_RIDERSHIP_SERVICE}/{start}/{end}/{use_date}/"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        code = root.findtext("RESULT/CODE")
+        if code and code != "INFO-000":
+            raise RuntimeError(f"Seoul API error {code}: {root.findtext('RESULT/MESSAGE')}")
+
+        total = int(root.findtext("list_total_count", "0"))
+        row_elements = root.findall("row")
+        rows.extend({child.tag: child.text for child in row_el} for row_el in row_elements)
+
+        if not row_elements or start + len(row_elements) - 1 >= total:
+            break
+        start += SUBWAY_RIDERSHIP_PAGE_SIZE
+    return rows
+
+
+@st.cache_data(ttl=SUBWAY_RIDERSHIP_CACHE_TTL, show_spinner=False)
+def _load_subway_ridership_table(auth_key: str, use_date: str) -> pd.DataFrame:
+    records = [
+        {
+            "station": row.get("SBWY_STNS_NM"),
+            "line": row.get("SBWY_ROUT_LN_NM"),
+            "boarding": float(row["GTON_TNOPE"]) if row.get("GTON_TNOPE") else 0.0,
+            "alighting": float(row["GTOFF_TNOPE"]) if row.get("GTOFF_TNOPE") else 0.0,
+        }
+        for row in _fetch_subway_ridership_rows(auth_key, use_date)
+    ]
+    return pd.DataFrame.from_records(records)
+
+
+def get_subway_ridership_stat(
+    auth_key: Optional[str], station_name: str, use_date: Optional[str] = None
+) -> Optional[dict]:
+    """역 하루 총 승하차 인원(참고 지표). 좌석 확률/혼잡도 계산에는 쓰이지 않는다.
+
+    CardSubwayStatsNew도 역/노선당 하루 총합만 주고 시간대 구분이 없다. 다만
+    역명 표기가 subwConfusion과 같은 관례(강남역 -> "강남")라 기존
+    _station_name_variants를 그대로 재사용해 정확히 매칭한다. 여러 노선에
+    걸친 역(예: 사당 2/4호선)은 전 노선 합산.
+    """
+    if not auth_key:
+        return None
+    if use_date is None:
+        use_date = (date.today() - timedelta(days=SUBWAY_RIDERSHIP_DATA_LAG_DAYS)).strftime("%Y%m%d")
+
+    try:
+        table = _load_subway_ridership_table(auth_key, use_date)
+    except Exception:
+        return None
+    if table.empty:
+        return None
+
+    variants = _station_name_variants(station_name)
+    matched = table[table["station"].isin(variants)]
+    if matched.empty:
+        return None
+
+    return {
+        "boarding": int(matched["boarding"].sum()),
+        "alighting": int(matched["alighting"].sum()),
+        "line_count": matched["line"].nunique(),
         "date": use_date,
     }
