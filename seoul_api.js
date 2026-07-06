@@ -214,22 +214,7 @@
     return [trimmed, trimmed + "역"];
   }
 
-  function displayName(rawName) {
-    return rawName.endsWith("역") ? rawName : `${rawName}역`;
-  }
-
-  async function getStationOptions(authKey) {
-    if (!authKey) return [];
-    try {
-      const table = await loadCongestionTable(authKey);
-      const names = new Set(table.map((r) => displayName(r.station)).filter(Boolean));
-      return Array.from(names).sort((a, b) => a.localeCompare(b, "ko"));
-    } catch (err) {
-      return [];
-    }
-  }
-
-  async function getRealCongestionSeries(authKey, stationName, depHour, depMinute, minutesOffsets, dow) {
+  async function getRealCongestionSeries(authKey, stationName, depHour, depMinute, minutesOffsets, preferredLine, dow) {
     dow = dow || "평일";
     if (!authKey) return null;
     let table;
@@ -243,10 +228,11 @@
     const matched = table.filter((r) => variants.includes(r.station) && r.dow === dow);
     if (matched.length === 0) return null;
 
-    // 역이 여러 노선에 걸쳐 있으면(예: 사당 2/4호선) 결정적으로 첫 노선만 사용.
+    // 사용자가 호선을 선택했으면 그 호선을 우선 사용하고, 데이터에 없거나
+    // 선택이 없으면(예: 구버전 호출) 결정적으로 첫 노선만 사용.
     // 상/하선(또는 내/외선)은 구분 입력을 받지 않으므로 평균낸다.
     const lines = Array.from(new Set(matched.map((r) => r.line))).sort();
-    const lineUsed = lines[0];
+    const lineUsed = preferredLine && lines.includes(preferredLine) ? preferredLine : lines[0];
     const lineRows = matched.filter((r) => r.line === lineUsed);
 
     const byMinute = new Map();
@@ -397,7 +383,6 @@
   global.SeoulAPI = {
     getKeys,
     setKeys,
-    getStationOptions,
     getRealCongestionSeries,
     getBusRidershipStat,
     getSubwayRidershipStat,

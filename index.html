@@ -66,14 +66,20 @@
     </div>
     <div class="form-row">
       <div class="field">
-        <label for="dep-station">출발역 / 정류장</label>
-        <input type="text" id="dep-station" list="dep-station-list" autocomplete="off" />
-        <datalist id="dep-station-list"></datalist>
+        <label for="dep-line">출발역 / 정류장</label>
+        <div class="station-picker" id="dep-picker">
+          <select id="dep-line" class="line-select" aria-label="출발 호선"></select>
+          <select id="dep-station-select" class="station-select" aria-label="출발역"></select>
+        </div>
+        <input type="text" id="dep-station" autocomplete="off" placeholder="예: 강남역10번출구" style="display:none;" />
       </div>
       <div class="field">
-        <label for="arr-station">도착역 / 정류장</label>
-        <input type="text" id="arr-station" list="arr-station-list" autocomplete="off" />
-        <datalist id="arr-station-list"></datalist>
+        <label for="arr-line">도착역 / 정류장</label>
+        <div class="station-picker" id="arr-picker">
+          <select id="arr-line" class="line-select" aria-label="도착 호선"></select>
+          <select id="arr-station-select" class="station-select" aria-label="도착역"></select>
+        </div>
+        <input type="text" id="arr-station" autocomplete="off" placeholder="예: 사당역4번출구" style="display:none;" />
       </div>
       <div class="field field-narrow">
         <label for="dep-time">퇴근(출발) 시간</label>
@@ -103,6 +109,7 @@
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="stations.js"></script>
   <script src="seoul_api.js"></script>
   <script src="app.js"></script>
   <script>

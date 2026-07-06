@@ -22,8 +22,6 @@
   const MINUTES_OFFSET = [];
   for (let m = 0; m <= 60; m += 5) MINUTES_OFFSET.push(m);
 
-  let stationOptionsCache = null; // 지하철 역명 목록(datalist), 최초 1회만 조회
-
   // ---------------------------------------------------------------------
   // 시드 고정 난수 (mock 생성용) — Python np.random.default_rng(seed)의
   // 정확한 알고리즘과는 다르지만, "같은 입력이면 같은 mock 결과"라는
@@ -166,33 +164,48 @@
   }
 
   // ---------------------------------------------------------------------
-  // 교통수단 전환 — 지하철: 역명 datalist 검색 입력, 버스: 자유 텍스트
+  // 역/정류장 선택 — 지하철: 호선 선택 → 역 선택 드롭다운 (stations.js의
+  // 정적 목록 사용), 버스: 자유 텍스트 입력
   // ---------------------------------------------------------------------
 
-  async function updateStationFieldsForTransport(transport) {
-    const depInput = el("dep-station");
-    const arrInput = el("arr-station");
-    const depList = el("dep-station-list");
-    const arrList = el("arr-station-list");
+  function withYeok(name) {
+    return name.endsWith("역") ? name : `${name}역`;
+  }
 
-    if (transport === "지하철") {
-      depInput.value = "강남역";
-      arrInput.value = "사당역";
-      depInput.placeholder = "예: 강남역";
-      arrInput.placeholder = "예: 사당역";
-      if (stationOptionsCache === null) {
-        const keys = SeoulAPI.getKeys();
-        stationOptionsCache = await SeoulAPI.getStationOptions(keys.congestionKey);
-      }
-      depList.innerHTML = stationOptionsCache.map((s) => `<option value="${s}">`).join("");
-      arrList.innerHTML = depList.innerHTML;
-    } else {
-      depInput.value = "강남역10번출구";
-      arrInput.value = "사당역4번출구";
-      depInput.placeholder = "예: 강남역10번출구";
-      arrInput.placeholder = "예: 사당역4번출구";
-      depList.innerHTML = "";
-      arrList.innerHTML = "";
+  function fillStationSelect(lineSelect, stationSelect, defaultStation) {
+    const stations = SubwayStations[lineSelect.value] || [];
+    stationSelect.innerHTML = stations.map((s) => `<option value="${s}">${s}</option>`).join("");
+    if (defaultStation && stations.includes(defaultStation)) {
+      stationSelect.value = defaultStation;
+    }
+  }
+
+  function initStationPickers() {
+    const lineOptions = Object.keys(SubwayStations)
+      .map((l) => `<option value="${l}">${l}</option>`)
+      .join("");
+    for (const [lineId, stationId, defLine, defStation] of [
+      ["dep-line", "dep-station-select", "2호선", "강남"],
+      ["arr-line", "arr-station-select", "2호선", "사당"],
+    ]) {
+      const lineSelect = el(lineId);
+      const stationSelect = el(stationId);
+      lineSelect.innerHTML = lineOptions;
+      lineSelect.value = defLine;
+      fillStationSelect(lineSelect, stationSelect, defStation);
+      lineSelect.addEventListener("change", () => fillStationSelect(lineSelect, stationSelect));
+    }
+  }
+
+  function updateStationFieldsForTransport(transport) {
+    const isSubway = transport === "지하철";
+    el("dep-picker").style.display = isSubway ? "flex" : "none";
+    el("arr-picker").style.display = isSubway ? "flex" : "none";
+    el("dep-station").style.display = isSubway ? "none" : "";
+    el("arr-station").style.display = isSubway ? "none" : "";
+    if (!isSubway) {
+      el("dep-station").value = "강남역10번출구";
+      el("arr-station").value = "사당역4번출구";
     }
   }
 
@@ -377,20 +390,27 @@
 
     try {
       const transport = document.querySelector('input[name="transport"]:checked').value;
-      const depStation = el("dep-station").value.trim();
-      const arrStation = el("arr-station").value.trim();
+      const isSubway = transport === "지하철";
+      const depStation = isSubway
+        ? withYeok(el("dep-station-select").value)
+        : el("dep-station").value.trim();
+      const arrStation = isSubway
+        ? withYeok(el("arr-station-select").value)
+        : el("arr-station").value.trim();
+      const depLine = isSubway ? el("dep-line").value : null;
       const [depHour, depMinute] = el("dep-time").value.split(":").map(Number);
 
       const keys = SeoulAPI.getKeys();
 
       let realCongestion = null;
-      if (transport === "지하철" && keys.congestionKey) {
+      if (isSubway && keys.congestionKey) {
         realCongestion = await SeoulAPI.getRealCongestionSeries(
           keys.congestionKey,
           depStation,
           depHour,
           depMinute,
-          MINUTES_OFFSET
+          MINUTES_OFFSET,
+          depLine
         );
       }
 
@@ -461,18 +481,15 @@
       panel.style.display = panel.style.display === "none" ? "block" : "none";
     });
 
-    el("settings-save-btn").addEventListener("click", async () => {
+    el("settings-save-btn").addEventListener("click", () => {
       SeoulAPI.setKeys({
         congestionKey: el("congestion-key-input").value.trim(),
         subwayRidershipKey: el("subway-ridership-key-input").value.trim(),
         busRidershipKey: el("bus-ridership-key-input").value.trim(),
       });
-      stationOptionsCache = null; // 키가 바뀌었을 수 있으니 역명 목록 다시 조회
       const status = el("settings-status");
       status.textContent = "저장했습니다.";
       setTimeout(() => (status.textContent = ""), 2500);
-      const transport = document.querySelector('input[name="transport"]:checked').value;
-      await updateStationFieldsForTransport(transport);
     });
   }
 
@@ -482,6 +499,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     initSettingsPanel();
+    initStationPickers();
 
     document.querySelectorAll('input[name="transport"]').forEach((radio) => {
       radio.addEventListener("change", (e) => updateStationFieldsForTransport(e.target.value));

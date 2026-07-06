@@ -8,13 +8,14 @@
  * - 서울시 API(openapi.seoul.go.kr)는 데이터 신선도를 위해 관여하지 않음
  *   (앱 레벨에서 이미 localStorage로 캐시함).
  */
-const CACHE_NAME = "seat-predictor-v2";
+const CACHE_NAME = "seat-predictor-v3";
 
 const PRECACHE_URLS = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./stations.js",
   "./seoul_api.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",

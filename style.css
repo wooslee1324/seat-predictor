@@ -223,6 +223,41 @@ a:hover {
   color: rgba(152, 160, 179, 0.6);
 }
 
+/* 호선 → 역 2단 선택 (지하철 모드) */
+.station-picker {
+  display: flex;
+  gap: 8px;
+}
+
+.station-picker select {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 1rem;
+  font-family: inherit;
+  color-scheme: dark;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.station-picker select:focus {
+  outline: none;
+  border-color: var(--brand-1);
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.22);
+}
+
+.line-select {
+  flex: 0 0 auto;
+  min-width: 96px;
+}
+
+.station-select {
+  flex: 1;
+  min-width: 0;
+}
+
 .radio-group {
   display: flex;
   gap: 18px;
