@@ -77,6 +77,18 @@ streamlit run app.py
 
 실행 후 브라우저에서 `http://localhost:8501` 로 접속하면 대시보드를 확인할 수 있습니다.
 
+### 5. 모바일 데모 실행
+
+수업 발표용 스마트폰 화면 데모는 별도 진입점으로 실행합니다.
+
+```bash
+streamlit run mobile_demo.py
+```
+
+팀원이 모바일 데모를 이어서 개발할 때는 `mobile-demo-base` 브랜치에서 새 기능
+브랜치를 만들어 작업합니다. 자세한 협업 흐름은
+[`docs/team-workflow.md`](docs/team-workflow.md)를 참고하세요.
+
 ## 🛠 기술 스택
 
 - [Streamlit](https://streamlit.io/) — 대시보드 UI
