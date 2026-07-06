@@ -1,14 +1,13 @@
 """오늘 퇴근길 좌석 예측기 — 서울시 공공데이터 기반 프로토타입."""
 
-from datetime import date, datetime, time, timedelta
+from datetime import time
 from typing import Optional
 
-import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 import seoul_api
+from core.prediction import WEB_PRESET, build_prediction, congestion_level
 
 st.set_page_config(
     page_title="오늘 퇴근길 좌석 예측기",
@@ -99,10 +98,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-SUBWAY_DOOR_OPTIONS = [f"{car}-{door}번" for car in range(1, 10) for door in range(1, 5)]
-BUS_POSITION_OPTIONS = ["앞문 바로 뒤 좌석 쪽", "중간문 근처 2인석 쪽", "뒷문 앞 교통약자석 반대편", "앞문 쪽 1인석 라인"]
-
-
 def _get_auth_key(name: str) -> Optional[str]:
     try:
         return st.secrets.get("seoul_api", {}).get(name)
@@ -114,80 +109,6 @@ CONGESTION_AUTH_KEY = _get_auth_key("subway_congestion_key")
 BUS_RIDERSHIP_AUTH_KEY = _get_auth_key("bus_ridership_key")
 SUBWAY_RIDERSHIP_AUTH_KEY = _get_auth_key("subway_ridership_key")
 SUBWAY_STATION_OPTIONS = seoul_api.get_station_options(CONGESTION_AUTH_KEY)
-
-
-def congestion_level(pct: float):
-    if pct >= 80:
-        return "매우 혼잡", "🔴"
-    if pct >= 60:
-        return "혼잡", "🟠"
-    if pct >= 40:
-        return "보통", "🟡"
-    return "여유", "🟢"
-
-
-@st.cache_data(show_spinner=False)
-def generate_prediction(
-    transport: str,
-    dep_station: str,
-    arr_station: str,
-    dep_hour: int,
-    dep_minute: int,
-    real_congestion_pct: Optional[tuple] = None,
-    real_line: Optional[str] = None,
-):
-    """real_congestion_pct가 주어지면 그 값을 혼잡도로 쓰고, 없으면 mock 곡선을 생성한다.
-
-    좌석 확률(seat_prob_pct)은 두 경우 모두 "혼잡도가 낮을수록 좌석 확률이 높다"는
-    동일한 유도 공식을 쓴다 — 실측값이 아니라 혼잡도로부터 추정한 값이라는 점은
-    UI 캡션에 항상 표시한다.
-    """
-    seed_key = (transport, dep_station.strip().lower(), arr_station.strip().lower(), dep_hour, dep_minute)
-    seed = abs(hash(seed_key)) % (2**32)
-    rng = np.random.default_rng(seed)
-
-    dep_t = time(dep_hour, dep_minute)
-    minutes_offset = np.arange(0, 65, 5)
-    base_dt = datetime.combine(date.today(), dep_t)
-    times = [(base_dt + timedelta(minutes=int(m))).time() for m in minutes_offset]
-    time_labels = [t.strftime("%H:%M") for t in times]
-
-    is_real = real_congestion_pct is not None
-    if is_real:
-        congestion_curve = np.array(real_congestion_pct, dtype=float)
-        base_congestion_now = float(congestion_curve[0])
-    else:
-        hour_decimal = dep_hour + dep_minute / 60
-        rush_center, rush_width = 18.5, 1.3
-        rush_intensity = np.exp(-0.5 * ((hour_decimal - rush_center) / rush_width) ** 2)
-        base_congestion_now = float(np.clip(35 + rush_intensity * 55 + rng.normal(0, 4), 15, 97))
-        decay = np.linspace(0, 1, len(minutes_offset))
-        congestion_curve = base_congestion_now * (1 - 0.5 * decay) + rng.normal(0, 3, len(minutes_offset))
-        congestion_curve = np.clip(congestion_curve, 8, 99)
-
-    seat_base = float(np.clip(100 - min(base_congestion_now, 100) - rng.uniform(0, 5), 2, 60))
-    seat_target = float(np.clip(seat_base + rng.uniform(30, 45), seat_base + 10, 96))
-    k = 0.18
-    t0 = rng.uniform(12, 20)
-    seat_curve = seat_base + (seat_target - seat_base) / (1 + np.exp(-k * (minutes_offset - t0)))
-    seat_curve += rng.normal(0, 2.5, len(minutes_offset))
-    seat_curve = np.clip(seat_curve, 1, 98)
-
-    df = pd.DataFrame(
-        {
-            "minutes_offset": minutes_offset,
-            "time_label": time_labels,
-            "congestion_pct": congestion_curve.round(1),
-            "seat_prob_pct": seat_curve.round(1),
-        }
-    )
-
-    if transport == "지하철":
-        wait_spot = rng.choice(SUBWAY_DOOR_OPTIONS) + " 문 앞"
-    else:
-        wait_spot = rng.choice(BUS_POSITION_OPTIONS)
-
-    return df, wait_spot, is_real, real_line
 
 
 transport = st.radio("교통수단", ["지하철", "버스"], horizontal=True)
@@ -242,8 +163,8 @@ elif transport == "지하철" and SUBWAY_RIDERSHIP_AUTH_KEY:
     # 하루치 전체가 약 618건이라 한 페이지로 끝나 버스처럼 느리지 않다.
     subway_ridership = seoul_api.get_subway_ridership_stat(SUBWAY_RIDERSHIP_AUTH_KEY, dep_station)
 
-df, wait_spot, is_real, data_line = generate_prediction(
-    transport, dep_station, arr_station, dep_time.hour, dep_time.minute, real_congestion_pct, real_line
+df, wait_spot, is_real, data_line = build_prediction(
+    WEB_PRESET, transport, dep_station, arr_station, dep_time.hour, dep_time.minute, real_congestion_pct, real_line
 )
 
 current_congestion = df.iloc[0]["congestion_pct"]

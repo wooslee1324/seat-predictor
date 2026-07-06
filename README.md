@@ -89,6 +89,27 @@ streamlit run mobile_demo.py
 브랜치를 만들어 작업합니다. 자세한 협업 흐름은
 [`docs/team-workflow.md`](docs/team-workflow.md)를 참고하세요.
 
+## 🧱 프로젝트 구조
+
+화면 코드와 로직 코드를 분리했습니다. 예측·데이터 로직은 프레임워크에 의존하지
+않는 `core/` 패키지에 모으고, 발표용 데모(`app.py`, `mobile_demo.py`)는 이를
+불러다 쓰기만 합니다. 이렇게 하면 앞으로 백엔드 API나 모바일 웹앱(PWA)이 같은
+로직을 공유할 수 있습니다.
+
+- `core/` — 공유 도메인 로직 (예측 엔진·서울 공공데이터 연동·캐시)
+- `app.py` — 웹 프로토타입 데모 (유지)
+- `mobile_demo.py` — 모바일 발표 데모 (유지)
+- `seoul_api.py` — 기존 import 호환용 shim (`core.seoul_api` 재수출)
+- `scripts/regression_check.py` — 리팩터링 회귀 검증 스크립트
+- `docs/` — 팀 문서
+
+자세한 내용은 아래 문서를 참고하세요.
+
+- [구조와 파일 역할](docs/architecture.md)
+- [배포 계획과 데모·프로덕션 분리](docs/deployment-plan.md)
+- [모바일 발전 방향(PWA 우선)](docs/mobile-tech.md)
+- [팀 협업 가이드](docs/team-workflow.md)
+
 ## 🛠 기술 스택
 
 - [Streamlit](https://streamlit.io/) — 대시보드 UI

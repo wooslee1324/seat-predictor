@@ -1,16 +1,14 @@
 """Streamlit mobile-style demo for the seat predictor."""
 
-from datetime import date, datetime, time, timedelta
-from hashlib import sha256
+from datetime import time
 from html import escape
 from typing import Optional
 
-import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 import seoul_api
+from core.prediction import MOBILE_PRESET, build_prediction, congestion_level_color
 
 
 st.set_page_config(
@@ -323,15 +321,6 @@ FALLBACK_STATIONS = [
     "을지로입구역",
 ]
 
-SUBWAY_DOOR_OPTIONS = [f"{car}-{door}번 문" for car in range(1, 10) for door in range(1, 5)]
-BUS_POSITION_OPTIONS = [
-    "앞문 뒤 좌석",
-    "중간문 근처",
-    "뒷문 앞 2인석",
-    "앞쪽 1인석",
-]
-
-
 def _get_auth_key(name: str) -> Optional[str]:
     try:
         return st.secrets.get("seoul_api", {}).get(name)
@@ -341,72 +330,6 @@ def _get_auth_key(name: str) -> Optional[str]:
 
 def _default_index(options: list[str], value: str) -> int:
     return options.index(value) if value in options else 0
-
-
-def _seed_from(*parts: object) -> int:
-    digest = sha256("|".join(map(str, parts)).encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") % (2**32)
-
-
-def _congestion_level(pct: float) -> tuple[str, str]:
-    if pct >= 80:
-        return "매우 혼잡", "var(--red)"
-    if pct >= 60:
-        return "혼잡", "var(--amber)"
-    if pct >= 40:
-        return "보통", "var(--teal)"
-    return "여유", "var(--green)"
-
-
-@st.cache_data(show_spinner=False)
-def _build_prediction(
-    transport: str,
-    dep_station: str,
-    arr_station: str,
-    dep_hour: int,
-    dep_minute: int,
-    real_congestion_pct: Optional[tuple[float, ...]] = None,
-    real_line: Optional[str] = None,
-) -> tuple[pd.DataFrame, str, bool, Optional[str]]:
-    seed = _seed_from(transport, dep_station.lower(), arr_station.lower(), dep_hour, dep_minute)
-    rng = np.random.default_rng(seed)
-
-    minutes_offset = np.arange(0, 65, 5)
-    base_dt = datetime.combine(date.today(), time(dep_hour, dep_minute))
-    time_labels = [(base_dt + timedelta(minutes=int(m))).strftime("%H:%M") for m in minutes_offset]
-
-    if real_congestion_pct is not None:
-        congestion_curve = np.array(real_congestion_pct, dtype=float)
-        base_congestion = float(congestion_curve[0])
-        is_real = True
-    else:
-        hour_decimal = dep_hour + dep_minute / 60
-        rush_center = 18.4 if transport == "지하철" else 18.1
-        rush_width = 1.35 if transport == "지하철" else 1.55
-        rush_intensity = np.exp(-0.5 * ((hour_decimal - rush_center) / rush_width) ** 2)
-        base_congestion = float(np.clip(32 + rush_intensity * 58 + rng.normal(0, 4), 12, 98))
-        decay = np.linspace(0, 1, len(minutes_offset))
-        congestion_curve = base_congestion * (1 - 0.48 * decay) + rng.normal(0, 2.4, len(minutes_offset))
-        congestion_curve = np.clip(congestion_curve, 8, 100)
-        is_real = False
-
-    seat_base = float(np.clip(104 - min(base_congestion, 100) - rng.uniform(7, 13), 3, 64))
-    seat_target = float(np.clip(seat_base + rng.uniform(28, 42), seat_base + 8, 96))
-    seat_curve = seat_base + (seat_target - seat_base) / (1 + np.exp(-0.18 * (minutes_offset - 16)))
-    seat_curve += rng.normal(0, 2.0, len(minutes_offset))
-    seat_curve = np.clip(seat_curve, 1, 98)
-
-    df = pd.DataFrame(
-        {
-            "minutes_offset": minutes_offset,
-            "time_label": time_labels,
-            "congestion_pct": congestion_curve.round(1),
-            "seat_prob_pct": seat_curve.round(1),
-        }
-    )
-
-    wait_spot = rng.choice(SUBWAY_DOOR_OPTIONS if transport == "지하철" else BUS_POSITION_OPTIONS)
-    return df, wait_spot, is_real, real_line
 
 
 def _render_bottom_nav(active: str = "예측") -> None:
@@ -489,7 +412,8 @@ if transport == "지하철":
 real_congestion_pct = tuple(real_congestion["congestion_pct"]) if real_congestion else None
 real_line = real_congestion["line"] if real_congestion else None
 
-df, wait_spot, is_real, data_line = _build_prediction(
+df, wait_spot, is_real, data_line = build_prediction(
+    MOBILE_PRESET,
     transport,
     dep_station,
     arr_station,
@@ -501,7 +425,7 @@ df, wait_spot, is_real, data_line = _build_prediction(
 
 current_congestion = float(df.iloc[0]["congestion_pct"])
 current_seat_prob = float(df.iloc[0]["seat_prob_pct"])
-level_label, level_color = _congestion_level(current_congestion)
+level_label, level_color = congestion_level_color(current_congestion)
 future_window = df[(df["minutes_offset"] > 0) & (df["minutes_offset"] <= 30)]
 best_row = future_window.loc[future_window["seat_prob_pct"].idxmax()]
 best_offset = int(best_row["minutes_offset"])
