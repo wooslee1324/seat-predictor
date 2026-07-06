@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend import config
-from backend.routers import health, predict, stations
+from backend.routers import health, predict, realtime, stations
 
 app = FastAPI(
     title=config.APP_TITLE,
@@ -33,6 +33,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(stations.router)
 app.include_router(predict.router)
+app.include_router(realtime.router)
 
 
 @app.get("/", tags=["상태"], summary="루트 안내")
@@ -42,5 +43,11 @@ def root() -> dict:
         "service": config.APP_TITLE,
         "version": config.APP_VERSION,
         "docs": "/docs",
-        "endpoints": ["GET /health", "GET /stations", "POST /predict"],
+        "endpoints": [
+            "GET /health",
+            "GET /stations",
+            "POST /predict",
+            "GET /realtime/subway/arrivals",
+            "GET /realtime/bus/arrivals",
+        ],
     }
