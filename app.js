@@ -300,23 +300,35 @@
 
     const yUpper = Math.max(100, Math.max(...seatY, ...congY) * 1.1);
 
+    const isNarrow = window.innerWidth <= 640;
     const layout = {
-      height: 430,
+      height: isNarrow ? 320 : 430,
       hovermode: "x unified",
       margin: { l: 55, r: 20, t: 40, b: 60 },
       legend: { orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "right", x: 1, font: { color: "#c8ccd6" } },
       xaxis: {
         title: "퇴근 시각",
         tickmode: "array",
-        tickvals: x,
-        ticktext: timeLabels,
+        // 좁은 화면에서는 눈금을 10분 간격으로 줄여 겹침 방지
+        tickvals: isNarrow ? x.filter((_, i) => i % 2 === 0) : x,
+        ticktext: isNarrow ? timeLabels.filter((_, i) => i % 2 === 0) : timeLabels,
         color: "#9aa0ac",
-        gridcolor: "#262b36",
+        gridcolor: "rgba(255,255,255,0.07)",
       },
-      yaxis: { title: "확률 / 혼잡도 (%)", range: [0, yUpper], color: "#9aa0ac", gridcolor: "#262b36" },
-      plot_bgcolor: "#0f1116",
-      paper_bgcolor: "#0f1116",
-      font: { color: "#c8ccd6" },
+      yaxis: {
+        title: "확률 / 혼잡도 (%)",
+        range: [0, yUpper],
+        color: "#9aa0ac",
+        gridcolor: "rgba(255,255,255,0.07)",
+      },
+      // 카드 배경(#chart 컨테이너)이 비치도록 투명 처리
+      plot_bgcolor: "rgba(0,0,0,0)",
+      paper_bgcolor: "rgba(0,0,0,0)",
+      font: {
+        color: "#c8ccd6",
+        family:
+          '"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      },
       shapes: [
         {
           type: "line",
@@ -424,9 +436,11 @@
       });
       renderMetricCards({ currentCongestion, level, currentSeatProb, waitSpot, bestOffset: bestRow.minutesOffset });
       renderReferenceStat(depStation, ridershipStat, ridershipKind);
-      renderChart(df, bestRow.minutesOffset, bestRow.timeLabel);
 
+      // Plotly가 컨테이너 폭을 측정할 수 있도록 결과 영역을 먼저 보이게 한다
+      // (display:none 상태로 그리면 기본 폭 700px로 렌더링돼 모바일에서 넘침)
       el("results").style.display = "block";
+      renderChart(df, bestRow.minutesOffset, bestRow.timeLabel);
     } finally {
       submitBtn.disabled = false;
     }
