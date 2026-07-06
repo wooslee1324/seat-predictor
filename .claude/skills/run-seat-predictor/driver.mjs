@@ -1,22 +1,23 @@
 #!/usr/bin/env node
-// Minimal chromium-cli-like REPL for driving the seat-predictor Streamlit app.
+// Minimal chromium-cli-like REPL for driving the seat-predictor static HTML app.
 // Reads one command per line from stdin. Commands:
-//   nav <url>
+//   nav <url>                          (use an absolute file:// path or http(s) URL)
 //   wait-for text=<substring>          (or a CSS selector)
 //   fill <selector> <text...>
 //   click <selector>
 //   press <key>
 //   wait <ms>
-//   resize-to-content                  (see Gotchas in SKILL.md — Streamlit
-//                                        scrolls inside [data-testid="stMain"],
-//                                        not the document body)
-//   screenshot [path]                  (implies resize-to-content first)
+//   eval <raw JS>                      (rest of the line, unparsed — for localStorage etc.)
+//   screenshot [path]                  (plain full-page screenshot — no Streamlit-specific
+//                                        scroll-container workaround needed for this plain
+//                                        HTML page, unlike the old Streamlit-era driver)
 //   console-errors
 //   quit
 //
 // Usage: node driver.mjs <<'EOF'
-// nav http://localhost:8765
+// nav file:///absolute/path/to/index.html
 // wait-for text=오늘 퇴근길 좌석 예측기
+// click #predict-btn
 // screenshot ./screenshots/dashboard.png
 // quit
 // EOF
@@ -34,36 +35,34 @@ async function ensureBrowser() {
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
   });
-}
-
-// Streamlit renders the app inside <section data-testid="stMain"> which has
-// its own overflow-y scroll — the <body> never grows, so a plain
-// `page.screenshot({ fullPage: true })` (and even a locator screenshot on
-// stAppViewContainer) only captures one viewport-height slice. Resizing the
-// viewport to stMain's real scrollHeight before shooting is what actually
-// gets the whole page.
-async function resizeToContent() {
-  const scrollHeight = await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="stMain"]') || document.body;
-    return el.scrollHeight;
-  });
-  await page.setViewportSize({ width: 1440, height: Math.min(scrollHeight + 40, 6000) });
-  await page.waitForTimeout(400);
+  page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
 }
 
 async function handle(line) {
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith("#")) return;
+
+  // eval takes the rest of the line completely raw (no tokenizing) since JS
+  // snippets routinely contain quotes/spaces that would otherwise collide
+  // with the tokenizer below (e.g. localStorage.setItem('a', JSON.stringify({...}))).
+  if (trimmed === "eval" || trimmed.startsWith("eval ")) {
+    await ensureBrowser();
+    const code = trimmed.slice(4).trim();
+    const result = await page.evaluate(code);
+    console.log("OK eval ->", JSON.stringify(result));
+    return;
+  }
+
   // Tokenize on whitespace, but keep 'single' or "double" quoted runs glued
-  // together as one token — needed for CSS attribute selectors that embed a
-  // space, e.g. input[aria-label='출발역 / 정류장']. Quotes embedded mid-token
-  // (that case) are kept as-is since they're valid CSS attribute-selector
-  // syntax. But if the WHOLE token is wrapped by one matching quote pair —
-  // e.g. a Playwright chained selector like '[data-testid="x"] >> nth=0'
-  // that only needed quoting to survive tokenization — the wrapping quotes
-  // are stripped. Playwright treats a selector string that *starts* with a
-  // quote char as its `text=` engine shorthand, so leaving them on breaks
-  // anything that isn't literal text matching.
+  // together as one token — needed for selectors that embed a space. Quotes
+  // embedded mid-token (e.g. input[aria-label='출발역 / 정류장']) are kept
+  // as-is since they're valid CSS attribute-selector syntax. But if the
+  // WHOLE token is wrapped by one matching quote pair — e.g. a chained
+  // selector '[data-testid="x"] >> nth=0' that only needed quoting to
+  // survive tokenization — the wrapping quotes are stripped. Playwright
+  // treats a selector string that *starts* with a quote char as its `text=`
+  // engine shorthand (exact text match), not a real selector, so leaving
+  // them on breaks anything that isn't literal text matching.
   const rawTokens = trimmed.match(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g) || [];
   const tokens = rawTokens.map((t) => {
     const q = t[0];
@@ -104,14 +103,9 @@ async function handle(line) {
       await page.waitForTimeout(parseInt(arg, 10) || 1000);
       console.log("OK wait", arg);
       break;
-    case "resize-to-content":
-      await resizeToContent();
-      console.log("OK resize-to-content");
-      break;
     case "screenshot": {
-      await resizeToContent();
       const path = arg || "./screenshots/screenshot.png";
-      await page.screenshot({ path });
+      await page.screenshot({ path, fullPage: true });
       console.log("OK screenshot", path);
       break;
     }

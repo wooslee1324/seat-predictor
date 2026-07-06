@@ -1,28 +1,24 @@
 ---
 name: run-seat-predictor
-description: Build, run, and drive the seat-predictor Streamlit app. Use when asked to start seat-predictor, launch the app, take a screenshot of its dashboard, or interact with the running UI (route inputs, congestion banner, seat-probability chart).
+description: Build, run, and drive the seat-predictor static HTML app. Use when asked to open/run seat-predictor, take a screenshot of its dashboard, or interact with the running UI (route inputs, congestion banner, seat-probability chart, reference stats).
 ---
 
-This is a Streamlit dashboard (`app.py` at repo root) with no build step.
-Drive it by starting the Streamlit server, then scripting a headless
-Chromium session against it via `.claude/skills/run-seat-predictor/driver.mjs`
-(a small `chromium-cli`-style Playwright REPL — this repo doesn't have
-`chromium-cli` installed, so this driver stands in for it).
+This is a static HTML/CSS/JS app (`index.html` at repo root) — **no build step,
+no server, no Python**. All Seoul Open Data API calls happen client-side via
+`seoul_api.js`, straight from the browser to `openapi.seoul.go.kr`. Drive it
+by scripting a headless Chromium session directly against the file via
+`.claude/skills/run-seat-predictor/driver.mjs` (a small `chromium-cli`-style
+Playwright REPL — this repo doesn't have `chromium-cli` installed, so this
+driver stands in for it).
 
 All paths below are relative to the repo root.
 
 ## Prerequisites
 
-- Python 3.13 (any recent Python 3 with `venv` works; verified on 3.13.2).
-- Node.js + npm, for the driver only (verified on Node 24.18.0).
+- Node.js + npm, for the driver only (verified on Node 24.18.0). Nothing else —
+  no Python, no `pip install`, no dev server.
 
 ## Setup
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
 
 ```bash
 cd .claude/skills/run-seat-predictor
@@ -32,196 +28,171 @@ npx playwright install chromium
 
 ## Run (agent path)
 
-1. Start the Streamlit server in the background and wait for the port:
-
-```bash
-source .venv/bin/activate
-nohup streamlit run app.py --server.headless true --server.port 8765 > /tmp/streamlit.log 2>&1 &
-echo $! > /tmp/streamlit.pid
-for i in $(seq 1 30); do
-  curl -sf http://localhost:8765 >/dev/null && echo SERVER_UP && break
-  sleep 1
-done
-```
-
-(macOS has no `timeout` binary by default — this is why the wait above is a
-plain `for` loop with `curl`, not `timeout curl ...`.)
-
-2. Drive it by piping commands into the driver:
+There's no server to start. Point the driver straight at the file with an
+**absolute** `file://` path (Playwright's `page.goto` doesn't resolve
+relative paths the way a browser address bar would):
 
 ```bash
 node .claude/skills/run-seat-predictor/driver.mjs <<'EOF'
-nav http://localhost:8765
+nav file:///Users/user/Documents/GitHub/seat-predictor/index.html
 wait-for text=오늘 퇴근길 좌석 예측기
-wait 2500
-screenshot .claude/skills/run-seat-predictor/screenshots/dashboard.png
+click #predict-btn
+wait 1500
+screenshot .claude/skills/run-seat-predictor/screenshots/mock.png
 console-errors
 quit
 EOF
 ```
 
-Screenshots land wherever you tell `screenshot` to put them (relative to
-the cwd `node` was run from). Use `console-errors` before trusting a
-screenshot — a Streamlit page can render its shell while a callback throws.
+Mock mode (no API keys) works with zero setup — this is the default and the
+right first check. Screenshots land wherever `screenshot` is told to put
+them (relative to the cwd `node` was run from). Use `console-errors` before
+trusting a screenshot — a page can render its shell while a fetch/script
+throws.
 
-3. Stop the server:
-
-```bash
-kill $(cat /tmp/streamlit.pid) 2>/dev/null; pkill -f "streamlit run app.py"
-```
+Because it's plain HTML with normal document-body scroll (no Streamlit-style
+inner scroll container), `screenshot` is just a regular full-page shot — no
+resize-to-content workaround needed.
 
 | command | what it does |
 |---|---|
-| `nav <url>` | navigate |
+| `nav <url>` | navigate (use an absolute `file://...index.html` path, or an `http(s)://` URL if hosting it) |
 | `wait-for text=<substring>` (or a CSS selector) | block until it appears |
 | `fill <selector> <text...>` | fill an input |
 | `click <selector>` | click |
 | `press <key>` | keyboard key, e.g. `Enter` |
-| `wait <ms>` | fixed pause — use for Plotly's draw animation |
-| `resize-to-content` | see Gotchas — resizes the viewport to `stMain`'s real height |
-| `screenshot [path]` | implies `resize-to-content` first, then shoots |
-| `console-errors` | prints any `console.error` seen so far as JSON |
+| `wait <ms>` | fixed pause — use a long one for the first bus-mode submit (see Gotchas) |
+| `eval <raw JS>` | rest of the line, unparsed, run via `page.evaluate` — for things like inspecting `localStorage` |
+| `screenshot [path]` | full-page screenshot |
+| `console-errors` | prints any `console.error`/uncaught page error seen so far as JSON |
 | `quit` | closes the browser and exits |
 
-To exercise the form (pick a different route/time before shooting), insert
-before the `screenshot` line. **The 출발/도착 widgets differ by transport
-mode:** for 지하철 they're a searchable `st.selectbox` (populated live from
-the real congestion API's station list when a key is configured); for 버스
-they're still a plain `st.text_input`.
+### Element IDs (this app's DOM, for `fill`/`click`)
 
-`교통수단` (지하철/버스) is a standalone `st.radio` OUTSIDE `st.form` — it
-rerenders the form's widgets (selectbox vs text_input) immediately on
-click. Everything else (stations, time, submit) is inside the form and
-only takes effect on the submit button click.
+| id | what |
+|---|---|
+| `input[name="transport"][value="지하철"]` / `[value="버스"]` | 교통수단 radio |
+| `#dep-station` / `#arr-station` | 출발/도착 (text input with a `<datalist>` — 지하철 모드일 때만 실제 역명으로 채워짐) |
+| `#dep-time` | 시간 (`<input type="time">`) |
+| `#predict-btn` | 제출 버튼 |
+| `#settings-toggle` | "⚙️ 인증키 설정" 토글 버튼 |
+| `#congestion-key-input` / `#subway-ridership-key-input` / `#bus-ridership-key-input` | 인증키 입력란 (설정 패널 안, 토글 열어야 보임) |
+| `#settings-save-btn` | 인증키 저장 (localStorage) |
+| `#guide-box` / `#tip-box` / `#metric-cards` / `#reference-stat` / `#chart` | 결과 영역 |
 
-Subway (selectbox — type into it, don't try to click an option by text;
-the option list is virtualized so an option outside the visible viewport
-doesn't exist in the DOM yet and `click` will time out):
+Transport switching is instant — `교통수단` is a plain `<input type=radio>`
+with a `change` listener, not something batched behind a form-submit quirk
+(unlike the old Streamlit version this skill used to target). Click the
+radio and the station field's type (search-backed `<datalist>` for 지하철,
+plain text for 버스) updates immediately, before you even touch the submit
+button.
 
-```
-click '[data-testid="stSelectbox"] >> nth=0'
-fill '[data-testid="stSelectbox"] input >> nth=0' 신도림역
-press Enter
-fill '[data-testid="stSelectbox"] input >> nth=1' 홍대입구역
-press Enter
-click button:has-text("좌석 확률 예측하기")
-wait 2500
-```
+### Exercising the form
 
-Bus (still free text) — also triggers the bus ridership reference-stat
-lookup (`get_bus_ridership_stat`), which is slow (10-20s) on the first
-call of the day and instant afterward (see Gotchas), so give it a much
-longer `wait` than the subway flow:
+Subway (searchable via native `<datalist>` — type-then-match, not a custom
+dropdown, so a plain `fill` + partial text works without any virtualization
+gotchas):
 
 ```
-click text=버스
-fill input[aria-label='출발역 / 정류장'] 강남역10번출구
-fill input[aria-label='도착역 / 정류장'] 사당역4번출구
-click button:has-text("좌석 확률 예측하기")
+fill #dep-station 잠실역
+fill #arr-station 홍대입구역
+click #predict-btn
+wait 1500
+```
+
+Bus (free text, no datalist):
+
+```
+click input[name="transport"][value="버스"]
+fill #dep-station 강남역10번출구
+fill #arr-station 사당역4번출구
+click #predict-btn
 wait 20000
 ```
 
-(Use single quotes around selectors that contain a space or `>>`
-chaining, not double — the driver's tokenizer glues a quoted run together
-to survive the embedded space, then strips the wrapping quotes *only*
-when the whole token is one matched quote pair, so
-`'[data-testid="stSelectbox"] input >> nth=0'` comes out as a clean
-chained selector. Double-quoting here would nest inside
-`button:has-text("...")` elsewhere in the same script — reserve double
-quotes for Playwright's own `:has-text("...")` syntax.)
+(20s wait for bus — see Gotchas. Subway-only submits need ~1.5s.)
+
+### Testing with real API keys
+
+Keys are never in the repo (see Gotchas in the main project) — inject them
+through the visible settings UI, the same path a real user takes:
+
+```
+nav file:///Users/user/Documents/GitHub/seat-predictor/index.html
+wait-for text=오늘 퇴근길 좌석 예측기
+click #settings-toggle
+fill #congestion-key-input <your-subway-congestion-key>
+fill #subway-ridership-key-input <your-subway-ridership-key>
+fill #bus-ridership-key-input <your-bus-ridership-key>
+click #settings-save-btn
+wait 2000
+click #predict-btn
+wait 3000
+screenshot .claude/skills/run-seat-predictor/screenshots/real.png
+console-errors
+quit
+```
+
+Saving keys clears the cached station-name list and re-fetches it for
+whichever transport mode is currently selected, so give it a couple of
+seconds after `#settings-save-btn` before submitting.
 
 ## Run (human path)
 
 ```bash
-source .venv/bin/activate
-streamlit run app.py   # opens http://localhost:8501 — Ctrl-C to stop
+open index.html   # macOS — or just double-click it in Finder
 ```
+
+No dev server, no `npm start` — it's a file.
 
 ## Test
 
-No automated test suite exists yet — verification is the screenshot flow
-above plus `console-errors` returning `[]`.
+No automated test suite — the screenshot + `console-errors` flow above is
+the verification method.
 
 ---
 
 ## Gotchas
 
-- **버스 모드's ridership reference stat (`get_bus_ridership_stat`) fetches
-  a whole day's bus data (~41,500 rows, 42 paginated API calls) on a cache
-  miss — the first submit in 버스 mode each day takes 10-20s, not the ~2.5s
-  a subway submit needs.** Subsequent bus submits (same day, any stop) hit
-  the cache and return instantly. Give the first bus-mode `wait` in a
-  script 20000ms+, or the screenshot captures Streamlit's dimmed
-  "running" state with stale results still showing.
-- **Streamlit's content scrolls inside `<section data-testid="stMain">`,
-  not the document body.** Both `page.screenshot({ fullPage: true })` and
-  even a locator screenshot on `[data-testid="stAppViewContainer"]` only
-  capture one viewport-height slice — the chart's x-axis and the footer
-  caption get silently cropped off. The fix (already in `driver.mjs`'s
-  `resize-to-content`): read `stMain.scrollHeight` and
-  `page.setViewportSize()` to that height before shooting.
-- **`requirements.txt` must not pin `pandas==2.2.2` on Python 3.13.** That
-  version has no prebuilt wheel for cp313, so `pip install` silently falls
-  back to compiling pandas from source via meson/ninja — it *works*, but
-  takes 10+ minutes and looks hung. The committed `requirements.txt` uses
-  `pandas>=2.2.3` (has cp313 wheels) instead. If you re-pin exact versions,
-  check wheel availability for the Python version in use first.
-- **Selectors with a space (Streamlit's `aria-label`s are Korean phrases
-  with spaces, e.g. `출발역 / 정류장`) break naive space-splitting of the
-  command line.** `driver.mjs` tokenizes with a small regex that glues a
-  `'single'` or `"double"` quoted run together as one token. Wrap the
-  attribute value in single quotes — `input[aria-label='출발역 / 정류장']`
-  — and reserve double quotes for Playwright's own `:has-text("...")`
-  syntax so the two don't nest inside a single unescaped token.
-- **A selector wrapped entirely in one quote pair — e.g.
-  `'[data-testid="stSelectbox"] input >> nth=0'` — used to come out of the
-  tokenizer with the quotes still attached, and Playwright treats a
-  selector string that *starts* with a quote char as shorthand for its
-  `text=` engine (exact text match), not a real selector.** That silently
-  turned every such `fill`/`click` into a doomed text search
-  (`Timeout 30000ms exceeded` waiting on `text='...'`). Fixed in
-  `driver.mjs`: after tokenizing, if a token is wrapped by one matching
-  quote pair start-to-end, the wrapping quotes are stripped; quotes
-  embedded *mid*-token (e.g. `input[aria-label='...']`, which doesn't
-  start with a quote char) are left alone since they're real CSS syntax.
-- **Streamlit's station `st.selectbox` is virtualized and doesn't accept
-  a real DOM `<input>` you'd expect — it has exactly one, found via
-  `[data-testid="stSelectbox"] input`.** With two selectboxes on the page
-  (출발/도착), scope with Playwright's `>> nth=0` / `>> nth=1` chaining,
-  not a bare `input[aria-label=...]` (there's no such attribute on the
-  selectbox's input). Typing a search term via `fill` + `press Enter` is
-  the reliable path; clicking a specific `[role="option"]` by text can
-  time out for stations outside the initially-rendered (virtualized)
-  window.
-- **`교통수단` must live outside `st.form` to be useful for driving the
-  app.** It was originally a widget *inside* the form alongside the
-  station inputs — inside a form, Streamlit only sends the script a
-  widget's new value on submit, so clicking 버스 flipped the radio's own
-  visual state instantly (client-side) but left the station widgets
-  rendering with the *previous* submission's transport mode (still a
-  subway selectbox) until submit — requiring two submits to actually
-  reach the bus text inputs. Moved the radio outside the form so it
-  reruns (and swaps the widget type) immediately on click.
-- **The `readline` "line" event races the stream's "close" event.** An
-  earlier version of `driver.mjs` used `readline.createInterface` and
-  called `browser.close()` in the `close` handler — with a heredoc, stdin
-  ends right after the last line is delivered, so `close` could fire while
-  an async command (e.g. `screenshot`) was still awaiting
-  `page.screenshot()`, closing the browser out from under it
-  (`Target page, context or browser has been closed`). Fixed by reading
-  all of stdin up front and processing commands in a single sequential
-  `for` loop instead of an event handler.
+- **`file://` navigation needs an absolute path.** `nav index.html` will not
+  resolve against the shell's `cwd` the way a browser's address bar
+  sometimes does — always pass the full `file:///Users/.../index.html` path.
+- **Bus mode's ridership reference stat fetches a whole day's data (~41,500
+  rows, dozens of paginated API calls) on first use — 10-20s, not the ~1.5s
+  a subway submit needs.** Give the first bus-mode `wait` in a script
+  20000ms+, or the screenshot captures the page mid-fetch with stale results
+  still showing from the previous submit.
+- **Real API calls need actual internet access to `openapi.seoul.go.kr`**
+  from wherever the driver runs. In a sandboxed/offline environment those
+  calls fail (silently, by design — the app falls back to Mock Data/hides
+  the reference stat), so only mock-mode behavior is verifiable there.
+- **The settings panel is `display:none` until toggled.** `fill`ing
+  `#congestion-key-input` before `click #settings-toggle` times out waiting
+  for a hidden, non-interactable element.
+- **A selector wrapped entirely in one quote pair** — e.g.
+  `'[data-testid="x"] >> nth=0'` — must have the wrapping quotes stripped by
+  the tokenizer, not left on, or Playwright treats a selector starting with
+  a quote character as its `text=` engine (exact text match) and every such
+  `fill`/`click` becomes a doomed text search. `driver.mjs` already handles
+  this (strips a token's wrapping quotes only when the *whole* token is one
+  matched pair; quotes embedded mid-token, like a CSS attribute value, are
+  left alone). Mentioned here because this app's plain `id`/attribute
+  selectors rarely need it, but it'll bite if you ever reach for `nth=`
+  chaining.
+- **`readline`'s "line" event races the stream's "close" event with a
+  heredoc.** `driver.mjs` reads all of stdin up front and processes commands
+  in one sequential loop instead of an event handler, so a still-pending
+  `screenshot` isn't cut off when stdin closes right after the last line.
 
 ## Troubleshooting
 
-- **`Cannot find module 'playwright'`**: you ran `node driver.mjs` from
-  somewhere other than this skill directory, or skipped `npm install`
-  here. `cd .claude/skills/run-seat-predictor && npm install`.
-- **`Target page, context or browser has been closed`**: see the
-  `readline`/`close` gotcha above — make sure you're on the current
-  `driver.mjs` (sequential stdin read, not a `readline` "line"/"close"
-  handler pair).
-- **Chart looks cut off in the screenshot** (missing x-axis labels /
-  footer caption): the `screenshot` command didn't resize first — use
-  `screenshot`, not a raw Playwright call, or run `resize-to-content`
-  immediately before it.
+- **`Cannot find module 'playwright'`**: run `node driver.mjs` from this
+  skill directory (or otherwise ensure its `node_modules` is on the resolve
+  path), or `npm install` here first.
+- **`net::ERR_FILE_NOT_FOUND` on `nav`**: the `file://` path isn't absolute,
+  or doesn't match the actual repo location on this machine.
+- **Reference-stat box never appears even after a long wait**: probably no
+  real API key is configured (open the settings panel and check), or there's
+  no network path to `openapi.seoul.go.kr` from this environment — both are
+  silent no-ops by design, not errors. Check `console-errors` to rule out an
+  actual JS exception.

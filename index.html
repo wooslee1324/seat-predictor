@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>오늘 퇴근길 좌석 예측기</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-title">🚇 오늘 퇴근길 좌석 예측기</div>
+  <div class="app-subtitle">
+    서울시 공공데이터 기반 실시간 혼잡도 · 좌석 확률 예측 (프로토타입 · 정적 HTML)
+  </div>
+
+  <button id="settings-toggle" class="settings-toggle-btn">⚙️ 인증키 설정</button>
+  <div id="settings-panel" class="settings-panel" style="display:none;">
+    <p class="settings-desc">
+      서울 열린데이터광장에서 발급받은 인증키를 입력하세요. 이 값은
+      <b>이 브라우저의 localStorage에만</b> 저장되고, 서버로 전송되거나
+      코드에 커밋되지 않습니다. 비워두면 해당 기능은 Mock Data로 대체됩니다.
+      <a href="https://data.seoul.go.kr/together/mypage/actkeyMain.do" target="_blank" rel="noopener">
+        인증키 발급받기 ↗
+      </a>
+    </p>
+    <label>지하철 혼잡도 인증키 (subwConfusion)</label>
+    <input type="text" id="congestion-key-input" placeholder="예: abcd1234..." />
+    <label>지하철 승하차 인증키 (CardSubwayStatsNew, 참고 지표용)</label>
+    <input type="text" id="subway-ridership-key-input" placeholder="예: abcd1234..." />
+    <label>버스 승하차 인증키 (CardBusStatisticsServiceNew, 참고 지표용)</label>
+    <input type="text" id="bus-ridership-key-input" placeholder="예: abcd1234..." />
+    <button id="settings-save-btn" class="save-btn">저장</button>
+    <span id="settings-status" class="settings-status"></span>
+    <p class="settings-warn">
+      ⚠️ 이 페이지를 <code>https://</code>로 배포하면 브라우저가 서울시 API의
+      <code>http://</code> 호출을 보안상 차단(mixed content)할 수 있습니다.
+      <code>file://</code>로 직접 열거나 <code>http://</code> 호스팅에서는 정상 동작합니다.
+    </p>
+  </div>
+
+  <form id="route-form" class="route-form">
+    <div class="form-row">
+      <div class="field">
+        <label>교통수단</label>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="transport" value="지하철" checked /> 지하철
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="transport" value="버스" /> 버스
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="field">
+        <label for="dep-station">출발역 / 정류장</label>
+        <input type="text" id="dep-station" list="dep-station-list" autocomplete="off" />
+        <datalist id="dep-station-list"></datalist>
+      </div>
+      <div class="field">
+        <label for="arr-station">도착역 / 정류장</label>
+        <input type="text" id="arr-station" list="arr-station-list" autocomplete="off" />
+        <datalist id="arr-station-list"></datalist>
+      </div>
+      <div class="field field-narrow">
+        <label for="dep-time">퇴근(출발) 시간</label>
+        <input type="time" id="dep-time" value="18:30" />
+      </div>
+    </div>
+    <button type="submit" id="predict-btn" class="predict-btn">🔍 좌석 확률 예측하기</button>
+  </form>
+
+  <div id="loading-message" class="loading-message" style="display:none;"></div>
+
+  <div id="results" style="display:none;">
+    <div id="guide-box" class="guide-box"></div>
+    <div id="tip-box" class="tip-box"></div>
+    <div id="metric-cards" class="metric-cards"></div>
+    <div id="reference-stat" class="reference-stat" style="display:none;"></div>
+
+    <div class="chart-heading">⏱️ 시간대별 앉아서 갈 확률 변화</div>
+    <div id="chart"></div>
+
+    <p class="footer-caption">
+      ⚠️ 앉아서 갈 확률은 혼잡도로부터 유도한 추정치이며 실측값이 아닙니다.
+      혼잡도는 실데이터를 찾은 경우 서울시 공공데이터(서울교통공사 지하철혼잡도정보)를,
+      찾지 못한 경우 Mock Data를 사용합니다. 혼잡도가 100%를 넘는 경우는 정원 대비
+      혼잡 승객 수가 정원을 초과했다는 뜻으로, 원본 데이터의 정상적인 표기입니다.
+    </p>
+  </div>
+
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="seoul_api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
