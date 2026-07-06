@@ -628,13 +628,190 @@ def _default_index(options: list[str], value: str) -> int:
     return options.index(value) if value in options else 0
 
 
-def _render_bottom_nav(active: str = "예측") -> None:
-    items = ["홈", "예측", "저장", "설정"]
-    html = "".join(
-        f'<div class="{"active" if item == active else ""}">{escape(item)}</div>'
-        for item in items
+# ------------------------------------------------------------------------
+# 탭 기반 앱 구조 (홈 / 경로 / 예측 / MY)
+# ------------------------------------------------------------------------
+
+# 보조/내비 버튼 색상: primary=캐러멜(활성 강조), secondary=연한 베이지(비활성)
+st.markdown(
+    """
+    <style>
+    .stButton > button[kind="secondary"] {
+        background: var(--surface-strong);
+        color: var(--text-soft);
+        border: 1px solid var(--border);
+    }
+    .stButton > button[kind="secondary"]:hover {
+        background: var(--primary-soft);
+        color: var(--text);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+CONGESTION_AUTH_KEY = _get_auth_key("subway_congestion_key")
+BUS_RIDERSHIP_AUTH_KEY = _get_auth_key("bus_ridership_key")
+SUBWAY_RIDERSHIP_AUTH_KEY = _get_auth_key("subway_ridership_key")
+station_options = seoul_api.get_station_options(CONGESTION_AUTH_KEY) or FALLBACK_STATIONS
+
+TABS = [("홈", "🏠"), ("경로", "🗺️"), ("예측", "📊"), ("MY", "👤")]
+
+IS_REAL_MODE = bool(CONGESTION_AUTH_KEY)
+DATA_MODE_TEXT = "실데이터 모드" if IS_REAL_MODE else "Demo 모드(예상치)"
+DATA_MODE_COLOR = "var(--accent)" if IS_REAL_MODE else "var(--warning)"
+
+_SESSION_DEFAULTS = {
+    "active_tab": "홈",
+    "saved_routes": [],
+    "selected_route": None,
+    "logged_in": False,
+    "user_email": "",
+    "notify_on": False,
+    "congestion_display": "퍼센트",
+    "seat_display": "퍼센트",
+    "ui_transport": "지하철",
+    "ui_dep_subway": "강남역",
+    "ui_arr_subway": "사당역",
+    "ui_dep_bus": "강남역10번출구",
+    "ui_arr_bus": "사당역4번출구",
+    "ui_bus_no": "146번",
+    "ui_time": time(18, 30),
+}
+for _k, _v in _SESSION_DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+
+for _key, _fb in (("ui_dep_subway", "강남역"), ("ui_arr_subway", "사당역")):
+    if st.session_state[_key] not in station_options:
+        st.session_state[_key] = station_options[_default_index(station_options, _fb)]
+
+
+def _go(tab: str) -> None:
+    st.session_state.active_tab = tab
+    st.rerun()
+
+
+def _select_route(transport, dep, arr, dep_time, bus_no="") -> None:
+    st.session_state.selected_route = {
+        "transport": transport,
+        "dep": dep,
+        "arr": arr,
+        "dep_time": dep_time,
+        "bus_no": bus_no,
+    }
+    st.session_state.active_tab = "예측"
+    st.rerun()
+
+
+def _route_headline(transport, dep, arr, bus_no, is_real, data_line):
+    if transport == "지하철":
+        line_label = _line_label(dep, data_line if is_real else None)
+        prefix = (
+            f'<span style="color:var(--primary); font-weight:800;">{escape(line_label)}</span> '
+            if line_label else ""
+        )
+        head = f'{prefix}{escape(dep)} <span class="route-arrow">→</span> {escape(arr)}'
+        sub = _direction_label(arr)
+        saved = f"{line_label + ' ' if line_label else ''}{dep} → {arr}"
+    else:
+        bh = f"{bus_no} 버스" if bus_no else "버스"
+        head = f'<span style="color:var(--primary); font-weight:800;">{escape(bh)}</span>'
+        sub = f"{dep} → {arr}"
+        saved = f"{bh} · {dep} → {arr}"
+    return head, sub, saved
+
+
+def _compute_prediction(route: dict) -> dict:
+    transport = route["transport"]
+    dep = route["dep"]
+    arr = route["arr"]
+    dep_time = route["dep_time"]
+    bus_no = route.get("bus_no", "")
+    real = None
+    if transport == "지하철":
+        real = seoul_api.get_real_congestion_series(
+            CONGESTION_AUTH_KEY, dep, dep_time.hour, dep_time.minute, list(range(0, 65, 5))
+        )
+    real_pct = tuple(real["congestion_pct"]) if real else None
+    real_line = real["line"] if real else None
+    df, wait_spot, is_real, data_line = build_prediction(
+        MOBILE_PRESET, transport, dep, arr, dep_time.hour, dep_time.minute, real_pct, real_line
     )
-    st.markdown(f'<div class="bottom-nav">{html}</div>', unsafe_allow_html=True)
+    current_congestion = float(df.iloc[0]["congestion_pct"])
+    current_seat_prob = float(df.iloc[0]["seat_prob_pct"])
+    level_label, level_color = congestion_level_color(current_congestion)
+    seat_status, seat_color = _seat_tier(current_seat_prob)
+    fut = df[(df["minutes_offset"] > 0) & (df["minutes_offset"] <= 30)]
+    best = fut.loc[fut["seat_prob_pct"].idxmax()]
+    return {
+        "transport": transport, "dep": dep, "arr": arr, "dep_time": dep_time, "bus_no": bus_no,
+        "df": df, "wait_spot": wait_spot, "is_real": is_real, "data_line": data_line,
+        "current_congestion": current_congestion, "current_seat_prob": current_seat_prob,
+        "level_label": level_label, "level_color": level_color,
+        "seat_status": seat_status, "seat_color": seat_color,
+        "best_offset": int(best["minutes_offset"]),
+        "best_prob": float(best["seat_prob_pct"]),
+        "best_time_label": str(best["time_label"]),
+    }
+
+
+def _render_hero() -> None:
+    st.markdown(
+        """
+        <div class="hero">
+            <div class="brand-lockup">
+                <span class="brand-icon" aria-hidden="true">🪑</span>
+                <div class="brand-text">
+                    <span class="brand-name">오늘좌석</span>
+                    <span class="brand-tagline">퇴근길 좌석 예측 서비스</span>
+                </div>
+            </div>
+            <p class="hero-desc">
+                퇴근길 지하철·버스 혼잡도를 분석해 가장 앉기 좋은 시간과 위치를 추천해드려요.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_topbar(title: str) -> None:
+    st.markdown(
+        f'''
+        <div class="hero" style="padding:14px 16px; margin-bottom:16px;">
+            <div class="brand-lockup">
+                <span class="brand-icon" style="font-size:1.4rem;">🪑</span>
+                <div class="brand-text">
+                    <span class="brand-name" style="font-size:1.15rem;">오늘좌석</span>
+                    <span class="brand-tagline">{escape(title)}</span>
+                </div>
+            </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_mode_badge() -> None:
+    st.markdown(
+        f'<div class="data-note">데이터 모드 · '
+        f'<b style="color:{DATA_MODE_COLOR};">{DATA_MODE_TEXT}</b></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_legend() -> None:
+    st.markdown(
+        """
+        <div class="data-note">
+            <b>실시간 도착정보</b> — 열차·버스가 몇 분 뒤 오는지(사실).<br/>
+            <b>예상 혼잡도</b> — 시간대 통계로 추정한 붐빔 정도.<br/>
+            <b>예상 좌석 확률</b> — 혼잡도로 유도한 <b>추정치</b>(실제 좌석 수 아님).<br/>
+            <b>참고용 통계</b> — 과거 하루 승하차 등 집계 데이터.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_saved_routes() -> None:
@@ -644,318 +821,324 @@ def _render_saved_routes() -> None:
         st.markdown(
             '<div class="empty-state">'
             '<div class="empty-title">아직 저장한 경로가 없어요</div>'
-            '<div class="empty-desc">예측 후 “이 경로 저장”을 누르면 여기에 모여요.</div>'
+            '<div class="empty-desc">예측 화면에서 “이 경로 저장”을 누르면 여기에 모여요.</div>'
             '</div>',
             unsafe_allow_html=True,
         )
         return
-
     for route in saved_routes[-5:][::-1]:
         title = route.get("label") or f'{route["dep"]} → {route["arr"]}'
         st.markdown(
-            f"""
+            f'''
             <div class="saved-row">
                 <div class="saved-title">{escape(title)}</div>
-                <div class="saved-meta">{escape(route["transport"])} · {escape(route["time"])} · 좌석 확률 {route["prob"]:.0f}%</div>
+                <div class="saved-meta">{escape(route["transport"])} · {escape(route["time"])} · 예상 좌석 확률 {route["prob"]:.0f}%</div>
             </div>
-            """,
+            ''',
             unsafe_allow_html=True,
         )
 
 
-CONGESTION_AUTH_KEY = _get_auth_key("subway_congestion_key")
-BUS_RIDERSHIP_AUTH_KEY = _get_auth_key("bus_ridership_key")
-SUBWAY_RIDERSHIP_AUTH_KEY = _get_auth_key("subway_ridership_key")
-station_options = seoul_api.get_station_options(CONGESTION_AUTH_KEY) or FALLBACK_STATIONS
+# --------------------------- 탭 1: 홈 ---------------------------
+def _render_home() -> None:
+    _render_hero()
+    _render_mode_badge()
 
-st.markdown(
-    """
-    <div class="hero">
-        <div class="brand-lockup">
-            <span class="brand-icon" aria-hidden="true">🪑</span>
-            <div class="brand-text">
-                <span class="brand-name">오늘좌석</span>
-                <span class="brand-tagline">퇴근길 좌석 예측 서비스</span>
-            </div>
-        </div>
-        <p class="hero-desc">
-            퇴근길 지하철·버스 혼잡도를 분석해 가장 앉기 좋은 시간과 위치를 추천해드려요.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    st.markdown('<div class="section-title">빠른 시작</div>', unsafe_allow_html=True)
+    if st.button("🚇 지하철 좌석 예측", use_container_width=True, key="qs_subway", type="primary"):
+        st.session_state.ui_transport = "지하철"
+        _go("경로")
+    if st.button("🚌 버스 좌석 예측", use_container_width=True, key="qs_bus"):
+        st.session_state.ui_transport = "버스"
+        _go("경로")
+    if st.button("⭐ 추천 시연 경로", use_container_width=True, key="qs_demo"):
+        _go("경로")
 
-if "saved_routes" not in st.session_state:
-    st.session_state.saved_routes = []
+    st.markdown('<div class="section-title">이 앱의 정보 구분</div>', unsafe_allow_html=True)
+    _render_legend()
 
-# --- Demo 모드 안내: 인증키가 없어도 발표 가능 ---
-if not CONGESTION_AUTH_KEY:
-    st.markdown(
-        '<div class="data-note">🔑 인증키 없음 — <b style="color:var(--amber);">Demo 모드</b>'
-        '(예상치)로 동작 중입니다. 키를 넣으면 지하철 혼잡도가 실데이터로 바뀝니다.</div>',
-        unsafe_allow_html=True,
+
+# --------------------------- 탭 2: 경로 ---------------------------
+def _render_route() -> None:
+    _render_topbar("경로 선택")
+
+    st.markdown('<div class="section-title">교통수단</div>', unsafe_allow_html=True)
+    transport = st.radio(
+        "교통수단",
+        ["지하철", "버스"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="ui_transport",
+        format_func=lambda option: f"🚇 {option}" if option == "지하철" else f"🚌 {option}",
     )
 
-# --- 위젯 기본값(추천 경로 버튼이 이 값을 바꿔 넣는다) ---
-_UI_DEFAULTS = {
-    "ui_transport": "지하철",
-    "ui_dep_subway": "강남역",
-    "ui_arr_subway": "사당역",
-    "ui_dep_bus": "강남역10번출구",
-    "ui_arr_bus": "사당역4번출구",
-    "ui_bus_no": "146번",
-    "ui_time": time(18, 30),
-}
-for _k, _v in _UI_DEFAULTS.items():
-    st.session_state.setdefault(_k, _v)
-
-# selectbox 값이 현재 역 목록에 없으면 안전하게 보정
-for _key, _fallback in (("ui_dep_subway", "강남역"), ("ui_arr_subway", "사당역")):
-    if st.session_state[_key] not in station_options:
-        st.session_state[_key] = station_options[_default_index(station_options, _fallback)]
-
-
-def _apply_demo_route(route: dict) -> None:
-    """추천 경로 버튼 — 입력 위젯과 결과를 한 번에 세팅한다."""
-    st.session_state.ui_transport = route["transport"]
-    if route["transport"] == "지하철":
-        if route["dep"] in station_options:
-            st.session_state.ui_dep_subway = route["dep"]
-        if route["arr"] in station_options:
-            st.session_state.ui_arr_subway = route["arr"]
-    else:
-        st.session_state.ui_dep_bus = route["dep"]
-        st.session_state.ui_arr_bus = route["arr"]
-        if route["bus_no"] in BUS_NUMBER_OPTIONS:
-            st.session_state.ui_bus_no = route["bus_no"]
-    st.session_state.ui_time = route["time"]
-    st.session_state.mobile_inputs = (
-        route["transport"], route["dep"], route["arr"], route["time"], route["bus_no"]
-    )
-    st.rerun()
-
-
-st.markdown('<div class="section-title">추천 시연 경로</div>', unsafe_allow_html=True)
-_demo_cols = st.columns(len(DEMO_ROUTES))
-for _col, _route in zip(_demo_cols, DEMO_ROUTES):
-    with _col:
-        if st.button(_route["label"], use_container_width=True, key=f"demo_{_route['label']}"):
-            _apply_demo_route(_route)
-
-st.markdown('<div class="section-title">교통수단</div>', unsafe_allow_html=True)
-transport = st.radio(
-    "교통수단",
-    ["지하철", "버스"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="ui_transport",
-    format_func=lambda option: f"🚇 {option}" if option == "지하철" else f"🚌 {option}",
-)
-
-with st.form("mobile_route_form"):
     bus_number = ""
     if transport == "지하철":
         dep_station = st.selectbox("출발역", station_options, key="ui_dep_subway")
         arr_station = st.selectbox("도착역", station_options, key="ui_arr_subway")
+        ll = _line_label(dep_station)
+        if ll:
+            st.markdown(
+                f'<div class="data-note">대표 호선 · '
+                f'<b style="color:var(--primary);">{escape(ll)}</b></div>',
+                unsafe_allow_html=True,
+            )
     else:
         dep_station = st.text_input("출발 정류장", key="ui_dep_bus")
         arr_station = st.text_input("도착 정류장", key="ui_arr_bus")
         bus_number = st.selectbox("버스 번호", BUS_NUMBER_OPTIONS, key="ui_bus_no")
         if bus_number == "직접 입력":
             bus_number = st.text_input("버스 번호 직접 입력", value="146번", key="ui_bus_no_custom")
+
     dep_time = st.time_input("출발 시간", key="ui_time")
-    submitted = st.form_submit_button("좌석 예측")
 
-if submitted or "mobile_inputs" not in st.session_state:
-    st.session_state.mobile_inputs = (transport, dep_station, arr_station, dep_time, bus_number)
+    if st.button("이 경로로 예측하기 →", use_container_width=True, type="primary", key="route_go"):
+        _select_route(transport, dep_station, arr_station, dep_time, bus_number)
 
-transport, dep_station, arr_station, dep_time, bus_number = st.session_state.mobile_inputs
+    st.markdown('<div class="section-title">추천 경로</div>', unsafe_allow_html=True)
+    for i, r in enumerate(DEMO_ROUTES):
+        head, sub, _ = _route_headline(r["transport"], r["dep"], r["arr"], r["bus_no"], False, None)
+        st.markdown(
+            f'''
+            <div class="route-strip">
+                <div class="route-main"><span>{head}</span></div>
+                <div class="route-meta">{escape(sub)} · {r["time"].strftime("%H:%M")}</div>
+            </div>
+            ''',
+            unsafe_allow_html=True,
+        )
+        if st.button("이 경로로 예측하기", use_container_width=True, key=f"demo_go_{i}"):
+            _select_route(r["transport"], r["dep"], r["arr"], r["time"], r["bus_no"])
 
-real_congestion = None
-if transport == "지하철":
-    real_congestion = seoul_api.get_real_congestion_series(
-        CONGESTION_AUTH_KEY,
-        dep_station,
-        dep_time.hour,
-        dep_time.minute,
-        list(range(0, 65, 5)),
+
+# --------------------------- 탭 3: 예측 ---------------------------
+def _render_predict() -> None:
+    _render_topbar("예측 결과")
+    route = st.session_state.selected_route
+    if not route:
+        st.markdown(
+            '<div class="empty-state">'
+            '<div class="empty-title">선택된 경로가 없어요</div>'
+            '<div class="empty-desc">경로 탭에서 먼저 경로를 선택해 주세요.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("경로 선택하러 가기", use_container_width=True, type="primary", key="predict_goroute"):
+            _go("경로")
+        return
+
+    p = _compute_prediction(route)
+    head, sub, saved_label = _route_headline(
+        p["transport"], p["dep"], p["arr"], p["bus_no"], p["is_real"], p["data_line"]
     )
+    source_text = f"실데이터 · {p['data_line']}" if p["is_real"] else "Demo 모드 · 예상치"
+    source_color = "var(--accent)" if p["is_real"] else "var(--warning)"
 
-real_congestion_pct = tuple(real_congestion["congestion_pct"]) if real_congestion else None
-real_line = real_congestion["line"] if real_congestion else None
-
-df, wait_spot, is_real, data_line = build_prediction(
-    MOBILE_PRESET,
-    transport,
-    dep_station,
-    arr_station,
-    dep_time.hour,
-    dep_time.minute,
-    real_congestion_pct,
-    real_line,
-)
-
-current_congestion = float(df.iloc[0]["congestion_pct"])
-current_seat_prob = float(df.iloc[0]["seat_prob_pct"])
-level_label, level_color = congestion_level_color(current_congestion)
-seat_status, seat_color = _seat_tier(current_seat_prob)
-future_window = df[(df["minutes_offset"] > 0) & (df["minutes_offset"] <= 30)]
-best_row = future_window.loc[future_window["seat_prob_pct"].idxmax()]
-best_offset = int(best_row["minutes_offset"])
-best_prob = float(best_row["seat_prob_pct"])
-best_time_label = str(best_row["time_label"])
-
-source_text = f"실데이터 · {data_line}" if is_real else "Demo 모드 · 예상치"
-source_color = "var(--accent)" if is_real else "var(--warning)"
-
-# 지하철: 호선 + 방면 / 버스: 버스 번호 를 카드에 표시
-if transport == "지하철":
-    line_label = _line_label(dep_station, data_line if is_real else None)
-    line_prefix = (
-        f'<span style="color:var(--teal); font-weight:800;">{escape(line_label)}</span> '
-        if line_label else ""
-    )
-    route_headline = (
-        f'{line_prefix}{escape(dep_station)} '
-        f'<span class="route-arrow">→</span> {escape(arr_station)}'
-    )
-    route_sub = _direction_label(arr_station)
-    saved_label = f"{line_label + ' ' if line_label else ''}{dep_station} → {arr_station}"
-else:
-    bus_headline = f"{bus_number} 버스" if bus_number else "버스"
-    route_headline = f'<span style="color:var(--teal); font-weight:800;">{escape(bus_headline)}</span>'
-    route_sub = f"{dep_station} → {arr_station}"
-    saved_label = f"{bus_headline} · {dep_station} → {arr_station}"
-
-st.markdown(
-    f"""
-    <div class="route-strip">
-        <div class="route-main"><span>{route_headline}</span></div>
-        <div class="route-meta">{escape(route_sub)} · {dep_time.strftime("%H:%M")} · <span style="color:{source_color};">{escape(source_text)}</span></div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-if best_prob - current_seat_prob >= 5:
-    hero_copy = f"{best_offset}분 뒤 {best_time_label}에 타면 더 유리합니다."
-else:
-    hero_copy = "지금 타도 좋은 구간입니다."
-
-st.markdown(
-    f"""
-    <div class="result-hero">
-        <div class="label">앉아서 갈 확률(예상)</div>
-        <div class="value" style="color:{seat_color};">{current_seat_prob:.0f}%</div>
-        <div class="copy"><span style="color:{seat_color};font-weight:800;">{escape(seat_status)}</span> · {escape(hero_copy)}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"""
-    <div class="metric-grid">
-        <div class="metric-card">
-            <div class="metric-label">현재 혼잡도</div>
-            <div class="metric-value" style="color:{level_color};">{current_congestion:.0f}%</div>
-            <div class="metric-note">{escape(level_label)}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">추천 위치</div>
-            <div class="metric-value" style="color:var(--accent);">{escape(wait_spot)}</div>
-            <div class="metric-note">{best_offset}분 뒤 기준</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-ridership = None
-if transport == "지하철" and SUBWAY_RIDERSHIP_AUTH_KEY:
-    ridership = seoul_api.get_subway_ridership_stat(SUBWAY_RIDERSHIP_AUTH_KEY, dep_station)
-elif transport == "버스" and BUS_RIDERSHIP_AUTH_KEY:
-    with st.spinner("정류장 데이터를 불러오는 중"):
-        ridership = seoul_api.get_bus_ridership_stat(BUS_RIDERSHIP_AUTH_KEY, dep_station)
-
-if ridership:
-    total = ridership["boarding"] + ridership["alighting"]
-    target_label = "노선" if transport == "지하철" else "정류장"
-    count = ridership.get("line_count", ridership.get("stop_count", 1))
     st.markdown(
-        f"""
-        <div class="data-note">
-            {ridership["date"]} 기준 · {target_label} {count}개 합산 · 하루 이용객 약
-            <b style="color:var(--text);">{total:,}명</b>
+        f'''
+        <div class="route-strip">
+            <div class="route-main"><span>{head}</span></div>
+            <div class="route-meta">{escape(sub)} · {p["dep_time"].strftime("%H:%M")} · <span style="color:{source_color};">{escape(source_text)}</span></div>
         </div>
-        """,
+        ''',
         unsafe_allow_html=True,
     )
 
-fig = go.Figure()
-fig.add_trace(
-    go.Scatter(
-        x=df["minutes_offset"],
-        y=df["seat_prob_pct"],
-        mode="lines+markers",
-        name="좌석 확률",
-        line=dict(color="#7a8f63", width=3),  # sage green
-        marker=dict(size=7),
-        fill="tozeroy",
-        fillcolor="rgba(122, 143, 99, 0.14)",
+    # 실시간 도착정보 영역 — 데모에서는 실제 연동을 하지 않으므로 가짜 값을 넣지 않는다.
+    st.markdown('<div class="section-title">실시간 도착정보</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="data-note">데모 화면에서는 실시간 도착정보를 연동하지 않습니다. '
+        '백엔드 <b>/realtime/subway/arrivals</b>·<b>/realtime/bus/arrivals</b> 로 제공될 예정입니다. '
+        '아래 값은 <b>예상</b> 혼잡도·좌석 확률(추정치)입니다.</div>',
+        unsafe_allow_html=True,
     )
-)
-fig.add_trace(
-    go.Scatter(
-        x=df["minutes_offset"],
-        y=df["congestion_pct"],
-        mode="lines",
-        name="혼잡도",
-        line=dict(color="#b85c38", width=2, dash="dot"),  # terracotta
+
+    if p["best_prob"] - p["current_seat_prob"] >= 5:
+        hero_copy = f'{p["best_offset"]}분 뒤 {p["best_time_label"]}에 타면 더 유리합니다.'
+    else:
+        hero_copy = "지금 타도 좋은 구간입니다."
+
+    if st.session_state.seat_display == "퍼센트":
+        seat_main = f'{p["current_seat_prob"]:.0f}%'
+        seat_copy = (
+            f'<span style="color:{p["seat_color"]};font-weight:800;">{escape(p["seat_status"])}</span>'
+            f' · {escape(hero_copy)}'
+        )
+    else:
+        seat_main = escape(p["seat_status"])
+        seat_copy = f'앉아서 갈 확률 약 {p["current_seat_prob"]:.0f}% · {escape(hero_copy)}'
+
+    st.markdown('<div class="section-title">예상 좌석 확률</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'''
+        <div class="result-hero">
+            <div class="label">앉아서 갈 확률(예상)</div>
+            <div class="value" style="color:{p["seat_color"]};">{seat_main}</div>
+            <div class="copy">{seat_copy}</div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
     )
-)
-fig.add_vline(x=best_offset, line_dash="dot", line_color="#5f3d28")  # deep brown marker
-fig.update_layout(
-    template="plotly_white",
-    height=245,
-    margin=dict(l=6, r=6, t=18, b=8),
-    paper_bgcolor="#f6efe7",
-    plot_bgcolor="#f6efe7",
-    font=dict(color="#3b2a1f"),
-    legend=dict(orientation="h", y=1.14, x=0, font=dict(size=11)),
-    xaxis=dict(
-        title=None,
-        tickmode="array",
-        tickvals=df["minutes_offset"][::2],
-        ticktext=df["time_label"][::2],
-        gridcolor="#e1d2c1",
-    ),
-    yaxis=dict(title=None, range=[0, 105], gridcolor="#e1d2c1"),
-)
-st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-if st.button("이 경로 저장"):
-    st.session_state.saved_routes.append(
-        {
-            "transport": transport,
-            "dep": dep_station,
-            "arr": arr_station,
-            "label": saved_label,
-            "time": dep_time.strftime("%H:%M"),
-            "prob": current_seat_prob,
-        }
+    if st.session_state.congestion_display == "퍼센트":
+        cong_main = f'{p["current_congestion"]:.0f}%'
+        cong_note = escape(p["level_label"])
+    else:
+        cong_main = escape(p["level_label"])
+        cong_note = f'{p["current_congestion"]:.0f}%'
+
+    st.markdown(
+        f'''
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="metric-label">예상 혼잡도</div>
+                <div class="metric-value" style="color:{p["level_color"]};">{cong_main}</div>
+                <div class="metric-note">{cong_note}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">추천 대기 위치</div>
+                <div class="metric-value" style="color:var(--accent);">{escape(p["wait_spot"])}</div>
+                <div class="metric-note">{p["best_offset"]}분 뒤 기준</div>
+            </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
     )
-    st.toast("저장되었습니다")
 
-_render_saved_routes()
+    st.markdown(
+        f'<div class="data-note">추천 탑승 시간 · '
+        f'<b>{p["best_time_label"]}</b> ({p["best_offset"]}분 뒤) · '
+        f'그때 예상 좌석 확률 <b>{p["best_prob"]:.0f}%</b></div>',
+        unsafe_allow_html=True,
+    )
 
-st.markdown(
-    f"""
-    <div class="section-title">설정</div>
-    <div class="data-note">데이터 모드 · <b style="color:{source_color};">{escape(source_text)}</b></div>
-    """,
-    unsafe_allow_html=True,
-)
+    df = p["df"]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df["minutes_offset"], y=df["seat_prob_pct"], mode="lines+markers",
+            name="좌석 확률", line=dict(color="#7a8f63", width=3), marker=dict(size=7),
+            fill="tozeroy", fillcolor="rgba(122, 143, 99, 0.14)",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["minutes_offset"], y=df["congestion_pct"], mode="lines",
+            name="혼잡도", line=dict(color="#b85c38", width=2, dash="dot"),
+        )
+    )
+    fig.add_vline(x=p["best_offset"], line_dash="dot", line_color="#5f3d28")
+    fig.update_layout(
+        template="plotly_white", height=245, margin=dict(l=6, r=6, t=18, b=8),
+        paper_bgcolor="#f6efe7", plot_bgcolor="#f6efe7", font=dict(color="#3b2a1f"),
+        legend=dict(orientation="h", y=1.14, x=0, font=dict(size=11)),
+        xaxis=dict(title=None, tickmode="array", tickvals=df["minutes_offset"][::2],
+                   ticktext=df["time_label"][::2], gridcolor="#e1d2c1"),
+        yaxis=dict(title=None, range=[0, 105], gridcolor="#e1d2c1"),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-_render_bottom_nav("예측")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("이 경로 저장", use_container_width=True, key="predict_save", type="primary"):
+            st.session_state.saved_routes.append(
+                {
+                    "transport": p["transport"], "dep": p["dep"], "arr": p["arr"],
+                    "label": saved_label, "time": p["dep_time"].strftime("%H:%M"),
+                    "prob": p["current_seat_prob"],
+                }
+            )
+            st.toast("저장되었습니다")
+    with c2:
+        if st.button("다른 경로 선택", use_container_width=True, key="predict_change"):
+            _go("경로")
+
+
+# --------------------------- 탭 4: MY ---------------------------
+def _render_my() -> None:
+    _render_topbar("마이페이지")
+
+    if not st.session_state.logged_in:
+        st.markdown('<div class="section-title">로그인 (데모)</div>', unsafe_allow_html=True)
+        email = st.text_input("이메일", key="login_email", placeholder="you@example.com")
+        if st.button("로그인 데모", use_container_width=True, type="primary", key="login_btn"):
+            st.session_state.logged_in = True
+            st.session_state.user_email = email.strip() or "guest@demo.com"
+            st.rerun()
+        st.markdown(
+            '<div class="data-note">발표용 목업 로그인입니다. 실제 인증은 하지 않습니다.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    saved = st.session_state.saved_routes
+    fav = "-"
+    if saved:
+        counts: dict = {}
+        for r in saved:
+            counts[r["transport"]] = counts.get(r["transport"], 0) + 1
+        fav = max(counts, key=counts.get)
+
+    st.markdown(
+        f'''
+        <div class="result-hero">
+            <div class="label">내 계정</div>
+            <div class="value" style="font-size:1.2rem; color:var(--primary);">{escape(st.session_state.user_email)}</div>
+            <div class="copy">저장한 경로 {len(saved)}개 · 자주 타는 교통수단 {escape(fav)}</div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+    _render_saved_routes()
+
+    st.markdown('<div class="section-title">설정</div>', unsafe_allow_html=True)
+    _render_mode_badge()
+    st.toggle("알림 받기", key="notify_on")
+    st.radio("혼잡도 표시 방식", ["퍼센트", "등급"], horizontal=True, key="congestion_display")
+    st.radio("좌석 확률 표시 방식", ["퍼센트", "상태"], horizontal=True, key="seat_display")
+
+    with st.expander("데이터 출처 보기"):
+        st.markdown(
+            "- 지하철 혼잡도: 서울교통공사 지하철혼잡도정보(subwConfusion)\n"
+            "- 지하철/버스 승하차: CardSubwayStatsNew · CardBusStatisticsServiceNew (참고용 통계)\n"
+            "- 실시간 도착(예정): realtimeStationArrival · getStationByUid\n\n"
+            "좌석 확률은 혼잡도로부터 유도한 **예상치**이며 실제 좌석 수가 아닙니다."
+        )
+
+    if st.button("저장 경로 초기화", use_container_width=True, key="reset_saved"):
+        st.session_state.saved_routes = []
+        st.toast("저장 경로를 비웠습니다")
+        st.rerun()
+    if st.button("로그아웃", use_container_width=True, key="logout_btn"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+
+# --------------------------- 하단 내비 (클릭 가능) ---------------------------
+def _render_bottom_nav() -> None:
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+    cols = st.columns(len(TABS))
+    for col, (name, icon) in zip(cols, TABS):
+        with col:
+            is_active = st.session_state.active_tab == name
+            if st.button(
+                f"{icon} {name}",
+                key=f"nav_{name}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                if not is_active:
+                    st.session_state.active_tab = name
+                    st.rerun()
+
+
+# --------------------------- 메인 디스패치 ---------------------------
+_TAB_RENDERERS = {
+    "홈": _render_home,
+    "경로": _render_route,
+    "예측": _render_predict,
+    "MY": _render_my,
+}
+_TAB_RENDERERS.get(st.session_state.active_tab, _render_home)()
+_render_bottom_nav()
