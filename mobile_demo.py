@@ -1,6 +1,6 @@
 """Streamlit mobile-style demo for the seat predictor."""
 
-from datetime import time
+from datetime import datetime, time, timedelta
 from html import escape
 from typing import Optional
 
@@ -670,6 +670,7 @@ _SESSION_DEFAULTS = {
     "notify_on": False,
     "congestion_display": "퍼센트",
     "seat_display": "퍼센트",
+    "crowd_reports": [],
     "ui_transport": "지하철",
     "ui_dep_subway": "강남역",
     "ui_arr_subway": "사당역",
@@ -753,6 +754,233 @@ def _compute_prediction(route: dict) -> dict:
         "best_prob": float(best["seat_prob_pct"]),
         "best_time_label": str(best["time_label"]),
     }
+
+
+# ======================================================================
+# 사용자 제보 기반 혼잡도 (발표용 데모 — 실제 DB/공식 API 아님)
+#   · 화면에서는 항상 "비공식 · 사용자 제보 기반"으로 표시한다.
+#   · 데이터는 st.session_state 에만 저장하고 개인정보는 저장하지 않는다.
+# ======================================================================
+SUBWAY_CROWD_LEVELS = ["매우 여유", "보통", "서 있기 가능", "서 있기 힘듦", "매우 혼잡"]
+BUS_CROWD_LEVELS = ["좌석 많음", "좌석 조금 있음", "입석 가능", "혼잡", "만차 수준"]
+SUBWAY_DIRECTIONS = ["상행", "하행"]
+CROWD_TIME_BANDS = ["출근(07~09)", "오전(09~12)", "점심(12~14)", "오후(14~17)", "퇴근(17~20)", "야간(20~24)"]
+REPORT_POINTS = 10
+DEDUP_MINUTES = 5      # 같은 경로 중복 제보 제한
+FRESH_MINUTES = 20     # 이 시간이 지나면 '오래된 제보'
+REWARDS = [(100, "커피 쿠폰", "☕"), (200, "교통카드 포인트", "🚏"), (300, "간식 쿠폰", "🍪")]
+
+
+def _crowd_levels_for(transport):
+    return SUBWAY_CROWD_LEVELS if transport == "지하철" else BUS_CROWD_LEVELS
+
+
+def _route_key(transport, a, b, c):
+    """중복 제보 제한용 세부 키(지하철: 호선|역|방향, 버스: 노선|정류장|시간대)."""
+    return f"{transport}|{a}|{b}|{c}"
+
+
+def _signal_key(transport, line, station):
+    """집계 표시용 키(지하철: 역 기준, 버스: 노선|정류장 기준)."""
+    if transport == "지하철":
+        return f"지하철|{station}"
+    return f"버스|{line}|{station}"
+
+
+def _guess_band(dep_time):
+    h = dep_time.hour
+    if 7 <= h < 9:
+        return CROWD_TIME_BANDS[0]
+    if 9 <= h < 12:
+        return CROWD_TIME_BANDS[1]
+    if 12 <= h < 14:
+        return CROWD_TIME_BANDS[2]
+    if 14 <= h < 17:
+        return CROWD_TIME_BANDS[3]
+    if 17 <= h < 20:
+        return CROWD_TIME_BANDS[4]
+    return CROWD_TIME_BANDS[5]
+
+
+def _points_total():
+    return len(st.session_state.crowd_reports) * REPORT_POINTS
+
+
+def _points_today():
+    today = datetime.now().date()
+    return sum(REPORT_POINTS for r in st.session_state.crowd_reports if r["ts"].date() == today)
+
+
+def _fresh_reports(signal_key=None):
+    now = datetime.now()
+    out = []
+    for r in st.session_state.crowd_reports:
+        if now - r["ts"] <= timedelta(minutes=FRESH_MINUTES) and (signal_key is None or r["signal_key"] == signal_key):
+            out.append(r)
+    return out
+
+
+def _recent_duplicate(route_key):
+    now = datetime.now()
+    for r in st.session_state.crowd_reports:
+        if r["route_key"] == route_key and now - r["ts"] < timedelta(minutes=DEDUP_MINUTES):
+            return r
+    return None
+
+
+def _minutes_ago(ts):
+    m = int((datetime.now() - ts).total_seconds() // 60)
+    return "방금 전" if m <= 0 else f"{m}분 전"
+
+
+def _render_crowd_signal(transport, signal_key, levels):
+    """예측 탭: 이 경로의 사용자 제보 집계(비공식) 카드."""
+    st.markdown('<div class="section-title">사용자 제보 기반 혼잡도</div>', unsafe_allow_html=True)
+    fresh = _fresh_reports(signal_key)
+    if not fresh:
+        matched = [r for r in st.session_state.crowd_reports if r["signal_key"] == signal_key]
+        if matched:
+            msg = f"최근 {FRESH_MINUTES}분 내 제보가 없어요(오래된 제보 {len(matched)}건). 새 제보를 남겨보세요."
+        else:
+            msg = "아직 이 경로에 대한 사용자 제보가 없어요. 첫 제보를 남겨보세요."
+        st.markdown(
+            f'<div class="data-note">🧑‍🤝‍🧑 {msg}<br/>'
+            f'<b style="color:var(--warning);">비공식 · 사용자 제보 기반</b> (공식 실시간 데이터 아님)</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    idxs = [r["level_idx"] for r in fresh]
+    rep = levels[round(sum(idxs) / len(idxs))]
+    latest = max(fresh, key=lambda r: r["ts"])
+    st.markdown(
+        f'''
+        <div class="route-strip">
+            <div class="route-main"><span>대표 혼잡도 · <b style="color:var(--primary);">{escape(rep)}</b></span></div>
+            <div class="route-meta">최근 {FRESH_MINUTES}분 제보 {len(fresh)}건 · 최근 “{escape(latest["level"])}” ({_minutes_ago(latest["ts"])})<br/>
+            <b style="color:var(--warning);">비공식 · 사용자 제보 기반</b> (공식 실시간 데이터 아님)</div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_report_form(route):
+    """예측 탭: 혼잡도 제보 폼(로그인한 사용자만)."""
+    st.markdown('<div class="section-title">혼잡도 제보하기</div>', unsafe_allow_html=True)
+    if not st.session_state.logged_in:
+        st.markdown(
+            '<div class="data-note">🔒 로그인하면 혼잡도를 제보하고 포인트를 받을 수 있어요. (MY 탭에서 로그인)</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    transport = route["transport"]
+    levels = _crowd_levels_for(transport)
+    with st.expander("제보 입력 열기", expanded=False):
+        if transport == "지하철":
+            line = st.text_input("호선", value=_line_label(route["dep"]) or "")
+            station = st.text_input("역", value=route["dep"])
+            direction = st.selectbox("방향", SUBWAY_DIRECTIONS)
+            car_no = st.selectbox("차량 칸 번호", [str(i) for i in range(1, 11)])
+            route_key = _route_key(transport, line, station, direction)
+            extra = f"{direction} · {car_no}칸"
+        else:
+            line = st.text_input("버스 번호", value=route.get("bus_no", "") or "")
+            station = st.text_input("정류장", value=route["dep"])
+            band = st.selectbox("시간대", CROWD_TIME_BANDS, index=_default_index(CROWD_TIME_BANDS, _guess_band(route["dep_time"])))
+            car_no = ""
+            route_key = _route_key(transport, line, station, band)
+            extra = band
+        level = st.radio("혼잡도 단계", levels)
+        signal_key = _signal_key(transport, line, station)
+        if st.button("제보하고 +10P 받기", use_container_width=True, type="primary", key="rep_submit"):
+            dup = _recent_duplicate(route_key)
+            if dup:
+                st.warning(f"같은 경로는 {DEDUP_MINUTES}분 후에 다시 제보할 수 있어요. (직전 제보 {_minutes_ago(dup['ts'])})")
+            else:
+                st.session_state.crowd_reports.append({
+                    "ts": datetime.now(),
+                    "transport": transport,
+                    "user": st.session_state.user_email,
+                    "line": line,
+                    "station": station,
+                    "level": level,
+                    "level_idx": levels.index(level),
+                    "route_key": route_key,
+                    "signal_key": signal_key,
+                    "extra": extra,
+                })
+                st.toast(f"제보 완료! +{REPORT_POINTS}P")
+                st.rerun()
+    st.markdown(
+        '<div class="data-note">제보는 <b>비공식 · 사용자 제보 기반</b> 신호로만 쓰이며, 공식 실시간 데이터가 아닙니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_my_points_and_rewards():
+    total = _points_total()
+    today = _points_today()
+    st.markdown('<div class="section-title">내 포인트</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'''
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="metric-label">오늘 획득</div>
+                <div class="metric-value" style="color:var(--accent);">+{today}P</div>
+                <div class="metric-note">오늘 제보로 받은 포인트</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">누적 포인트</div>
+                <div class="metric-value" style="color:var(--primary);">{total}P</div>
+                <div class="metric-note">지금까지 모은 포인트</div>
+            </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="section-title">제보 기록</div>', unsafe_allow_html=True)
+    reports = st.session_state.crowd_reports
+    if not reports:
+        st.markdown(
+            '<div class="empty-state">'
+            '<div class="empty-title">아직 제보가 없어요</div>'
+            '<div class="empty-desc">예측 탭에서 혼잡도를 제보하고 포인트를 받아보세요.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        for r in reports[-6:][::-1]:
+            stale = datetime.now() - r["ts"] > timedelta(minutes=FRESH_MINUTES)
+            tag = ' · <span style="color:var(--muted);">오래된 제보</span>' if stale else ""
+            st.markdown(
+                f'''
+                <div class="saved-row">
+                    <div class="saved-title">{escape(r["transport"])} · {escape(r["line"])} {escape(r["station"])}</div>
+                    <div class="saved-meta">{escape(r["level"])} · {escape(r.get("extra", ""))} · {_minutes_ago(r["ts"])}{tag} · +{REPORT_POINTS}P</div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="section-title">리워드 (발표용 mock)</div>', unsafe_allow_html=True)
+    for need, name, icon in REWARDS:
+        unlocked = total >= need
+        color = "var(--accent)" if unlocked else "var(--muted)"
+        status = "교환 가능" if unlocked else f"{need - total}P 남음"
+        st.markdown(
+            f'''
+            <div class="route-strip">
+                <div class="route-main"><span>{icon} {escape(name)}</span><span style="color:{color};">{need}P</span></div>
+                <div class="route-meta" style="color:{color};">{status}</div>
+            </div>
+            ''',
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        '<div class="data-note">리워드는 실제 지급이 아니라 발표용 데모입니다.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_hero() -> None:
@@ -1038,6 +1266,14 @@ def _render_predict() -> None:
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+    _sig_key = _signal_key(
+        p["transport"],
+        (_line_label(p["dep"]) or "") if p["transport"] == "지하철" else p["bus_no"],
+        p["dep"],
+    )
+    _render_crowd_signal(p["transport"], _sig_key, _crowd_levels_for(p["transport"]))
+    _render_report_form(route)
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("이 경로 저장", use_container_width=True, key="predict_save", type="primary"):
@@ -1089,6 +1325,8 @@ def _render_my() -> None:
         ''',
         unsafe_allow_html=True,
     )
+
+    _render_my_points_and_rewards()
 
     _render_saved_routes()
 
