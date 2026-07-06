@@ -30,6 +30,9 @@ _ENV_MAP = {
     "subway_congestion_key": "SEOUL_SUBWAY_CONGESTION_KEY",
     "subway_ridership_key": "SEOUL_SUBWAY_RIDERSHIP_KEY",
     "bus_ridership_key": "SEOUL_BUS_RIDERSHIP_KEY",
+    # 실시간 도착정보용 인증키
+    "subway_realtime_key": "SEOUL_SUBWAY_REALTIME_KEY",
+    "bus_realtime_key": "SEOUL_BUS_REALTIME_KEY",
 }
 
 APP_TITLE = "오늘 좌석 예측기 API"
@@ -81,3 +84,20 @@ def get_auth_key(name: str) -> Optional[str]:
 def congestion_key() -> Optional[str]:
     """지하철 혼잡도 실데이터용 인증키(없으면 None)."""
     return get_auth_key("subway_congestion_key")
+
+
+def subway_realtime_key() -> Optional[str]:
+    """지하철 실시간 도착정보용 인증키.
+
+    전용 키(subway_realtime_key)가 없으면, 같은 서울 열린데이터광장 키인
+    지하철 혼잡도 키(subway_congestion_key)로 폴백한다.
+    """
+    return get_auth_key("subway_realtime_key") or get_auth_key("subway_congestion_key")
+
+
+def bus_realtime_key() -> Optional[str]:
+    """버스 실시간 도착정보용 인증키(없으면 None).
+
+    버스 도착정보는 TOPIS/공공데이터포털 키를 쓰므로, 없으면 버스 승하차 키로
+    폴백을 시도한다(키 발급 포털이 다를 수 있어 실패할 수 있음 — 확인 필요)."""
+    return get_auth_key("bus_realtime_key") or get_auth_key("bus_ridership_key")

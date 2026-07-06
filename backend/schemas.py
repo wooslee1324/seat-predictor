@@ -85,3 +85,46 @@ class PredictResponse(BaseModel):
     recommendation: Recommendation
     series: list[SeriesPoint]
     notice: str = Field(..., description="좌석 확률이 추정치임을 알리는 안내 문구")
+
+
+# --- 실시간 도착정보 (예상 좌석 확률과 절대 섞지 않음) ---
+
+class SubwayArrival(BaseModel):
+    line: Optional[str] = Field(None, description="노선명")
+    direction: Optional[str] = Field(None, description="상행/하행(또는 내/외선)")
+    destination: Optional[str] = Field(None, description="종착역")
+    train_line_name: Optional[str] = Field(None, description="행선 안내(예: 성수행 - 건대입구방면)")
+    arrival_message: Optional[str] = Field(None, description="실시간 도착 안내 메시지")
+    seconds_to_arrival: Optional[int] = Field(None, description="도착까지 남은 초(제공될 때만)")
+    train_no: Optional[str] = Field(None, description="열차 번호")
+    received_at: Optional[str] = Field(None, description="데이터 생성 시각(현재와의 차이 보정 필요)")
+
+
+class BusArrival(BaseModel):
+    route_name: Optional[str] = Field(None, description="노선명")
+    arrival_message: Optional[str] = Field(None, description="실시간 도착 안내 메시지")
+    seconds_to_arrival: Optional[int] = Field(None, description="도착까지 남은 초(제공될 때만)")
+    vehicle_no: Optional[str] = Field(None, description="차량 번호(제공될 때만)")
+    realtime_congestion: Optional[str] = Field(
+        None, description="실시간 혼잡도(버스 제공 시). 좌석 확률이 아니라 참고용 실시간 혼잡 신호"
+    )
+    is_full: Optional[bool] = Field(None, description="만차 여부(제공될 때만)")
+    stop_name: Optional[str] = Field(None, description="정류소명")
+
+
+class RealtimeSubwayArrivalsResponse(BaseModel):
+    station: str = Field(..., description="조회한 역명")
+    available: bool = Field(..., description="실시간 도착정보 제공 가능 여부")
+    data_source: str = Field(..., description="'실시간 도착정보' 또는 '미제공'")
+    arrivals: list[SubwayArrival] = Field(default_factory=list, description="실시간 도착 목록")
+    message: str = Field(..., description="사용자 안내 문구")
+    notice: str = Field(..., description="실시간 도착정보와 예상 좌석 확률의 구분 안내")
+
+
+class RealtimeBusArrivalsResponse(BaseModel):
+    ars_id: str = Field(..., description="조회한 정류소 ARS 번호")
+    available: bool = Field(..., description="실시간 도착정보 제공 가능 여부")
+    data_source: str = Field(..., description="'실시간 도착정보' 또는 '미제공'")
+    arrivals: list[BusArrival] = Field(default_factory=list, description="실시간 도착 목록")
+    message: str = Field(..., description="사용자 안내 문구")
+    notice: str = Field(..., description="실시간 도착정보와 예상 좌석 확률의 구분 안내")
